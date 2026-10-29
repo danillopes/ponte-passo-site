@@ -1,0 +1,781 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Reflector } from 'three/addons/objects/Reflector.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { P, H, deckY, cableY, stairSteps, makeTextures, makeMaterials, buildBridge, buildEnvironment, buildPeople, buildSky, RiverShader } from './model.js';
+import { TYPES, MOUNTS, EFFECTS, LightRig, computeGrid, falseColor, FALSE_STOPS, NBR5101, groupColor, efficacy, fluxUnit, candela, nitsOf, powerForNits, cctToSRGB } from './lighting.js';
+
+const $ = (s) => document.querySelector(s);
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const fmt = (v, d = 0) => Number(v).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+// =====================================================================
+//  Estado
+// =====================================================================
+let uid = 0;
+function G(o) {
+  const g = Object.assign({ id: 'g' + (++uid), on: false, colorMode: 'cct', cct: 3000, rgb: '#2a4bff', power: 10, dim: 100, effOverride: null, beam: 120, effect: 'estatico', speed: 0.4, lambda: 8, nLights: 6, params: {}, fixtures: [] }, o);
+  for (const p of MOUNTS[g.mount].params) if (g.params[p.k] === undefined) g.params[p.k] = p.def;
+  return g;
+}
+function baseGroups() {
+  return [
+    G({ name: 'Fita nos cabos principais', mount: 'cable', type: 'strip', beam: 120, power: 1, nLights: 12 }),
+    G({ name: 'Linear sob o corrimão', mount: 'handrail', type: 'linearRail', beam: 40, power: 0.15, nLights: 14 }),
+    G({ name: 'Pixels nos pendurais', mount: 'hangers', type: 'dot', beam: 120, power: 2, nLights: 8 }),
+    G({ name: 'Projetores nas torres', mount: 'towerUp', type: 'flood', beam: 25, power: 12, nLights: 8 }),
+    G({ name: 'Washers no pórtico', mount: 'towerTop', type: 'washer', beam: 45, power: 10, nLights: 4 }),
+    G({ name: 'Washers sob o tabuleiro', mount: 'underDeck', type: 'washer', beam: 30, power: 8, nLights: 8 }),
+    G({ name: 'Projetores no cais', mount: 'quay', type: 'flood', beam: 10, power: 30, nLights: 4 }),
+    G({ name: 'Balizadores no rodapé', mount: 'postFoot', type: 'bollard', beam: 60, power: 2, nLights: 8 }),
+    G({ name: 'Balizadores das escadas', mount: 'stairs', type: 'bollard', beam: 60, power: 3, nLights: 4 }),
+    G({ name: 'Luminárias avulsas', mount: 'custom', type: 'flood', beam: 25, power: 30, nLights: 6 }),
+  ];
+}
+const PRESETS = {
+  cenica: { nome: 'Proposta cênica — azul Mampituba + branco quente', patch: {
+    cable: { on: true, colorMode: 'rgb', rgb: '#2b55ff', power: 0.75 },
+    handrail: { on: true, colorMode: 'cct', cct: 3000, power: 0.15, beam: 40 },
+    towerUp: { on: true, colorMode: 'cct', cct: 4000, power: 12, beam: 25 },
+    towerTop: { on: true, colorMode: 'cct', cct: 3000, power: 10, beam: 45 },
+    underDeck: { on: true, colorMode: 'rgb', rgb: '#00b7ff', power: 8, beam: 30, params: { spacing: 6 } },
+    stairs: { on: true, colorMode: 'cct', cct: 3000, power: 2 },
+  } },
+  atual: { nome: 'Situação atual (fotos 2024–25): cabos azuis', patch: {
+    cable: { on: true, colorMode: 'rgb', rgb: '#1f2fff', power: 1.5 },
+    handrail: { on: true, colorMode: 'cct', cct: 5000, power: 0.15, beam: 60 },
+    towerUp: { on: true, colorMode: 'rgb', rgb: '#2436ff', power: 10, beam: 10 },
+  } },
+  funcional: { nome: 'Funcional — branco quente 3000 K', patch: {
+    handrail: { on: true, colorMode: 'cct', cct: 3000, power: 0.15, beam: 40 },
+    towerTop: { on: true, colorMode: 'cct', cct: 3000, power: 10, beam: 45 },
+    stairs: { on: true, colorMode: 'cct', cct: 3000, power: 2 },
+    postFoot: { on: true, colorMode: 'cct', cct: 3000, power: 0.5, params: { every: 2 } },
+  } },
+  festiva: { nome: 'Festiva — RGB dinâmico', patch: {
+    cable: { on: true, colorMode: 'rgb', rgb: '#ff2fd0', power: 1.5, effect: 'arcoiris', speed: 0.25, lambda: 24 },
+    hangers: { on: true, colorMode: 'rgb', rgb: '#ffffff', power: 1.5, effect: 'corrida', speed: 0.5, lambda: 30 },
+    underDeck: { on: true, colorMode: 'rgb', rgb: '#7a2cff', power: 10, effect: 'onda', speed: 0.3, lambda: 20 },
+    towerUp: { on: true, colorMode: 'rgb', rgb: '#ff2fa0', power: 15, beam: 25, effect: 'respira', speed: 0.3 },
+    handrail: { on: true, colorMode: 'cct', cct: 3000, power: 0.1, beam: 40 },
+  } },
+  apagado: { nome: 'Tudo apagado (só o entorno)', patch: {} },
+};
+function presetGroups(key) {
+  const gs = baseGroups(), patch = PRESETS[key].patch;
+  for (const g of gs) { const p = patch[g.mount]; if (p) { const { params, ...rest } = p; Object.assign(g, rest); if (params) Object.assign(g.params, params); } }
+  return gs;
+}
+
+const S = {
+  mode: 'noite', ev: 0, bloom: 0.35, refl: 1, ripple: 0.035, fog: 0.35, lamps: true, shadows: false,
+  people: true, city: true, dims: false, heat: false, quality: 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
+  groups: presetGroups('cenica'),
+};
+try {
+  const saved = JSON.parse(localStorage.getItem('ponte-pensil-v2') || 'null');
+  if (saved && saved.groups) { Object.assign(S, saved, { groups: saved.groups.map(g => G({ ...g, id: undefined })) }); }
+} catch (e) { /* armazenamento indisponível */ }
+const persist = debounce(() => { try { localStorage.setItem('ponte-pensil-v2', JSON.stringify(serialize())); } catch (e) { /* ignora */ } }, 400);
+function serialize() { const { groups, ...rest } = S; return { ...rest, groups: groups.map(({ id, ...g }) => g) }; }
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// =====================================================================
+//  Renderizador e cena
+// =====================================================================
+const stage = $('#stage');
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+stage.prepend(renderer.domElement);
+const labelRenderer = new CSS2DRenderer({ element: $('#labels') });
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+camera.position.set(-75, 32, 95);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 7, 0); controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.maxDistance = 900; controls.minDistance = 0.5; controls.maxPolarAngle = Math.PI * 0.62;
+
+const TX = makeTextures(), M = makeMaterials(TX);
+const bridge = buildBridge(M); scene.add(bridge);
+const env = buildEnvironment(M, TX); scene.add(env.group);
+const people = buildPeople(M); scene.add(people);
+const sky = buildSky(); scene.add(sky.dome, sky.stars);
+scene.fog = new THREE.FogExp2(0x000000, 0.001);
+
+const water = new Reflector(new THREE.PlaneGeometry(2 * P.quayX, 1600), { textureWidth: 1024, textureHeight: 1024, clipBias: 0.003, shader: RiverShader, multisample: 4 });
+water.rotation.x = -Math.PI / 2; water.name = 'Rio_Mampituba'; scene.add(water);
+{ const ob = water.onBeforeRender.bind(water); water.onBeforeRender = (...a) => { const sv = sky.stars.visible, hv = heat.mesh.visible, dv = dims.visible; sky.stars.visible = false; heat.mesh.visible = false; dims.visible = false; ob(...a); sky.stars.visible = sv; heat.mesh.visible = hv; dims.visible = dv; }; }
+const WU = water.material.uniforms;
+
+const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1); sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -130, right: 130, top: 130, bottom: -130, near: 1, far: 600 }); sun.shadow.bias = -0.0005;
+scene.add(sun, sun.target);
+
+// iluminação pública existente (sódio/LED 2200 K) nos postes mais próximos
+const streetLights = new THREE.Group(); streetLights.name = 'Iluminacao_publica_existente';
+env.lampPos.filter(p => Math.abs(p.z) < 60).forEach(p => {
+  const l = new THREE.SpotLight(cctToSRGB(2200), 2600, 0, 1.15, 0.6, 2);
+  l.position.copy(p); l.target.position.copy(p).add(V(0, -10, 0)); streetLights.add(l, l.target);
+});
+scene.add(streetLights);
+
+const rig = new LightRig(scene);
+
+// mapa de falsa cor sobre o piso
+const heat = (() => {
+  const nx = Math.round(P.L / 0.5), nz = 5;
+  const data = new Uint8Array(nx * nz * 4);
+  const tex = new THREE.DataTexture(data, nx, nz); tex.colorSpace = THREE.SRGBColorSpace; tex.magFilter = THREE.LinearFilter; tex.needsUpdate = true;
+  const pos = [], uv = [], idx = [], cols = 200;
+  for (let i = 0; i <= cols; i++) {
+    const x = -H() + P.L * i / cols, y = deckY(x) + 0.012;
+    for (const [z, v] of [[-0.75, 0], [0.75, 1]]) { pos.push(x, y, z); uv.push(i / cols, v); }
+    if (i) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geo.setIndex(idx);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.92, depthWrite: false, fog: false, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(geo, mat); mesh.visible = false; mesh.renderOrder = 5; mesh.name = 'Mapa_lux';
+  scene.add(mesh);
+  return { mesh, tex, data, mat };
+})();
+
+// =====================================================================
+//  Pós-processamento: exposição → bloom → curva de tons por canal máximo
+// =====================================================================
+const composerRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+const composer = new EffectComposer(renderer, composerRT);
+composer.addPass(new RenderPass(scene, camera));
+const exposurePass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, exposure: { value: 1 }, cap: { value: 14 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float exposure, cap; varying vec2 vUv;
+    void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb*exposure; float m = max(c.r, max(c.g, c.b)); if (m > cap) c *= cap/m; gl_FragColor = vec4(max(c, vec3(0.0)), 1.0); }`,
+});
+composer.addPass(exposurePass);
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.35, 0.3, 2.5);
+composer.addPass(bloom);
+const finalPass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+    float aces(float x){ return clamp(x*(2.51*x+0.03)/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }
+    vec3 toSRGB(vec3 c){ return mix(c*12.92, 1.055*pow(c, vec3(1.0/2.4)) - 0.055, step(0.0031308, c)); }
+    void main(){
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      float m = max(c.r, max(c.g, c.b));
+      vec3 o = m > 1e-5 ? c*(aces(m)/m) : c;
+      float w = smoothstep(3.0, 40.0, m)*0.6;
+      o = mix(o, vec3(max(o.r, max(o.g, o.b))), w);
+      vec2 q = vUv - 0.5; o *= 1.0 - dot(q, q)*0.35;
+      gl_FragColor = vec4(toSRGB(clamp(o, 0.0, 1.0)), 1.0);
+    }`,
+});
+composer.addPass(finalPass);
+
+// =====================================================================
+//  Períodos do dia (valores físicos: céu em cd/m², luzes em lux)
+// =====================================================================
+const MODES = {
+  noite: { nome: 'Noite', exp: 0.26, top: [0.008, 0.011, 0.03], hor: [0.11, 0.1, 0.12], bot: [0.02, 0.02, 0.025], glow: [0.2, 0.11, 0.06], stars: true, sunI: 0.5, sunC: '#a9b8ff', sunPos: [-60, 120, 140], hemiI: 0.9, hemiSky: '#5a6a9a', hemiGnd: '#2a2420', win: 5, lamp: 15000, body: [0.012, 0.016, 0.018], sunShadow: false },
+  azul: { nome: 'Hora azul', exp: 0.085, top: [0.7, 1.3, 3.4], hor: [6.5, 4.6, 4.0], bot: [0.5, 0.5, 0.6], glow: [2.4, 1.0, 0.35], stars: false, sunI: 2.5, sunC: '#ffb27a', sunPos: [-200, 14, 60], hemiI: 7, hemiSky: '#7f95c8', hemiGnd: '#3a3530', win: 6, lamp: 15000, body: [0.25, 0.33, 0.38], sunShadow: false },
+  dia: { nome: 'Dia', exp: 0.00012, top: [1500, 3100, 7400], hor: [6000, 6700, 7600], bot: [1400, 1400, 1400], glow: [0, 0, 0], stars: false, sunI: 62000, sunC: '#fff2df', sunPos: [-80, 140, 60], hemiI: 15000, hemiSky: '#a8c8ff', hemiGnd: '#8a7f70', win: 0, lamp: 0, body: [160, 220, 240], sunShadow: true },
+};
+let exposure = 1;
+function applyMode() {
+  const m = MODES[S.mode];
+  exposure = m.exp * Math.pow(2, S.ev);
+  exposurePass.uniforms.exposure.value = exposure;
+  const u = sky.dome.material.uniforms;
+  u.top.value.setRGB(...m.top); u.horizon.value.setRGB(...m.hor); u.bottom.value.setRGB(...m.bot); u.glow.value.setRGB(...m.glow);
+  sky.stars.visible = m.stars;
+  sun.intensity = m.sunI; sun.color.set(m.sunC); sun.position.set(...m.sunPos); sun.castShadow = m.sunShadow;
+  hemi.intensity = m.hemiI; hemi.color.set(m.hemiSky); hemi.groundColor.set(m.hemiGnd);
+  M.facade.emissiveIntensity = m.win; M.house.emissiveIntensity = m.win * 0.8;
+  M.lampHead.color.setRGB(1, 0.62, 0.32).multiplyScalar(S.lamps ? m.lamp : 0);
+  scene.fog.color.setRGB(...m.hor); scene.fog.density = S.fog * 0.0045;
+  WU.body.value.setRGB(...m.body); WU.reflectivity.value = S.refl; WU.distortion.value = S.ripple;
+  streetLights.visible = S.lamps && S.mode !== 'dia';
+  bloom.strength = S.bloom;
+  heat.mat.color.setScalar(0.85 / exposure);
+  dimMat.color.setScalar(0.9 / exposure);
+}
+
+// =====================================================================
+//  Cotas e medidas
+// =====================================================================
+const dims = new THREE.Group(); dims.name = 'Cotas'; dims.visible = false; scene.add(dims);
+const dimMat = new THREE.LineBasicMaterial({ color: 0xffffff, fog: false, depthTest: false, transparent: true });
+function dimLine(pts) { const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), dimMat); l.renderOrder = 10; dims.add(l); }
+function dimLabel(text, p) { const d = document.createElement('div'); d.className = 'dim'; d.textContent = text; const o = new CSS2DObject(d); o.position.copy(p); dims.add(o); }
+(() => {
+  const h = H(), n = stairSteps();
+  dimLine([V(-h, P.towerTop + 1.6, 3.2), V(h, P.towerTop + 1.6, 3.2)]);
+  dimLine([V(-h, P.towerTop + 1.2, 3.2), V(-h, P.towerTop + 2.0, 3.2)]); dimLine([V(h, P.towerTop + 1.2, 3.2), V(h, P.towerTop + 2.0, 3.2)]);
+  dimLabel('Vão entre eixos das torres: 100,00 m', V(0, P.towerTop + 2.0, 3.2));
+  dimLine([V(0, P.cableLow, 2.4), V(0, P.towerTop, 2.4)]);
+  dimLabel(`Flecha do cabo f = ${fmt(P.towerTop - P.cableLow, 2)} m (≈ L/${fmt(P.L / (P.towerTop - P.cableLow), 1)})`, V(0, (P.cableLow + P.towerTop) / 2, 2.4));
+  dimLine([V(0, 0, 2.2), V(0, deckY(0) - 0.37, 2.2)]);
+  dimLabel(`Gabarito livre ≈ ${fmt(deckY(0) - 0.37, 2)} m sobre o N.A.`, V(0, 2.4, 2.2));
+  dimLabel(`Piso no meio do vão +${fmt(deckY(0), 2)} m`, V(6, deckY(0) + 1.6, 0));
+  dimLabel(`Piso nas torres +${fmt(P.deckEnd, 2)} m · contraflecha ${fmt(P.camber, 2)} m`, V(-h + 8, P.deckEnd + 1.9, 0));
+  dimLabel(`Sela do cabo +${fmt(P.towerTop, 2)} m`, V(-h, P.towerTop + 0.8, -2.2));
+  dimLabel('Largura livre 1,50 m · guarda-corpo 1,20 m', V(22, deckY(22) + 1.5, -1.5));
+  dimLabel(`Pendurais a cada ${fmt(P.hangerStep, 1)} m · Ø 16 mm`, V(-28, cableY(-28) + 0.6, 1.2));
+  dimLabel(`Escada: ${n} degraus × ${fmt((P.deckEnd - P.ground) / n * 100, 0)} cm`, V(h + P.landing + n * P.stairRun / 2, P.ground + 3.2, 1.6));
+  dimLabel('Ancoragem dos cabos', V(h + P.anchorDist, P.ground + 1.2, 0));
+  dimLabel('N.A. médio ±0,00 (referência)', V(-20, 0.1, 10));
+  dimLabel('Praça / cais +1,60 m', V(-h - 4, P.ground + 0.3, 12));
+})();
+
+// =====================================================================
+//  Luzes LED: construção, cálculo e HUD
+// =====================================================================
+const QUALITY = { leve: { dpr: 1, budget: 0.5, refl: 0.35 }, media: { dpr: 1.5, budget: 1, refl: 0.5 }, alta: { dpr: 2, budget: 1.6, refl: 0.75 } };
+let lastCalc = null;
+function rebuildAll() { rig.budgetScale = QUALITY[S.quality].budget; rig.shadows = S.shadows; rig.rebuildAll(S.groups); scheduleCalc(); }
+const pendingBuild = new Set();
+function rebuildGroup(g) { pendingBuild.add(g); requestAnimationFrame(flushBuild); }
+function flushBuild() { if (!pendingBuild.size) return; pendingBuild.forEach(g => rig.build(g)); pendingBuild.clear(); rig.applyShadows(); scheduleCalc(); persist(); }
+const scheduleCalc = debounce(runCalc, 180);
+function runCalc() {
+  lastCalc = computeGrid(rig, S.groups);
+  const { E, nx, nz } = lastCalc;
+  for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+    const c = falseColor(E[i * nz + j]), k = (j * nx + i) * 4;
+    heat.data[k] = c[0]; heat.data[k + 1] = c[1]; heat.data[k + 2] = c[2]; heat.data[k + 3] = 255;
+  }
+  heat.tex.needsUpdate = true;
+  renderHUD(); renderCalc();
+}
+function classOf(c) { for (const k of NBR5101) if (c.Em >= k.Em && c.U0 >= k.U0) return k.c; return null; }
+function renderHUD() {
+  const st = rig.stats(S.groups), c = lastCalc; if (!c) return;
+  const cls = classOf(c);
+  $('#hud').innerHTML = `
+    <div class="chip"><small>Em no piso</small>${fmt(c.Em, 1)} lx</div>
+    <div class="chip"><small>Uniformidade U0</small>${fmt(c.U0, 2)}</div>
+    <div class="chip"><small>Potência</small>${fmt(st.W, 0)} W</div>
+    <div class="chip"><small>Fluxo</small>${fmt(st.lm / 1000, 1)} klm</div>
+    <div class="chip ${cls ? 'ok' : 'no'}"><small>NBR 5101 pedestres</small>${cls ? 'Atende ' + cls : 'Abaixo de P4'}</div>`;
+}
+
+// =====================================================================
+//  Interface
+// =====================================================================
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') e.className = v; else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v === true ? '' : v);
+  }
+  kids.flat().forEach(c => { if (c !== null && c !== undefined && c !== false) e.append(c.nodeType ? c : document.createTextNode(c)); });
+  return e;
+}
+function slider({ id, label, min, max, step, value, f = (v) => v, on }) {
+  const out = el('b', {}, f(value));
+  const inp = el('input', { type: 'range', id, min, max, step, value });
+  inp.addEventListener('input', () => { const v = parseFloat(inp.value); out.textContent = f(v); on(v); });
+  return el('div', { class: 'field' }, el('div', { class: 'lab' }, el('label', { for: id }, label), out), inp);
+}
+function toggle({ id, label, checked, on }) {
+  const inp = el('input', { type: 'checkbox', id, checked: !!checked, onchange: () => on(inp.checked) });
+  return el('div', { class: 'row' }, el('label', { for: id }, label), el('span', { class: 'switch' }, inp, el('span')));
+}
+function seg(opts, value, on, id) {
+  const wrap = el('div', { class: 'seg', role: 'group', id });
+  opts.forEach(([v, l]) => {
+    const b = el('button', { type: 'button', 'aria-pressed': String(v === value) }, l);
+    b.addEventListener('click', () => { wrap.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false')); b.setAttribute('aria-pressed', 'true'); on(v); });
+    wrap.append(b);
+  });
+  return wrap;
+}
+function toast(msg, ms = 3200) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast._t); if (ms) toast._t = setTimeout(() => { t.hidden = true; }, ms); }
+
+// abas
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + b.dataset.tab));
+  $('#panel').classList.remove('min');
+  try { localStorage.setItem('ponte-pensil-tab', b.dataset.tab); } catch (e) { /* ignora */ }
+}));
+$('#sheetToggle').addEventListener('click', () => { const p = $('#panel'); p.classList.toggle('min'); $('#sheetToggle').textContent = p.classList.contains('min') ? '▴' : '▾'; setTimeout(resize, 50); });
+
+// --- vistas ---
+const VIEWS = [
+  ['Geral', [-75, 32, 95], [0, 7, 0]],
+  ['Do rio', [14, 1.6, 78], [0, 7.5, 0]],
+  ['Pedestre', [-47.5, deckY(-47.5) + 1.62, 0.15], [10, deckY(10) + 1.2, 0]],
+  ['Praça RS', [-68, P.ground + 1.7, 10], [-30, 9, 0]],
+  ['Sob a ponte', [6, 1.1, 9], [-2, 5.6, -3]],
+  ['Ponte de concreto', [12, 7.8, -272], [0, 7, 0]],
+  ['Drone', [60, 90, 75], [0, 4, 0]],
+];
+let tween = null;
+function flyTo(p, t) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), p1: V(...p), t1: V(...t), s: performance.now(), d: 1200 }; }
+VIEWS.forEach(([n, p, t]) => $('#views').append(el('button', { type: 'button', onclick: () => flyTo(p, t) }, n)));
+
+// --- Cena ---
+function renderScenePane() {
+  const p = $('#pane-cena'); p.innerHTML = '';
+  p.append(
+    el('h3', {}, 'Período'),
+    seg([['noite', 'Noite'], ['azul', 'Hora azul'], ['dia', 'Dia']], S.mode, v => { S.mode = v; applyMode(); persist(); }, 'modeSeg'),
+    slider({ id: 'ev', label: 'Exposição da câmera', min: -4, max: 4, step: 0.1, value: S.ev, f: v => (v > 0 ? '+' : '') + fmt(v, 1) + ' EV', on: v => { S.ev = v; applyMode(); persist(); } }),
+    slider({ id: 'bloom', label: 'Brilho (bloom) dos LEDs', min: 0, max: 2, step: 0.05, value: S.bloom, f: v => fmt(v, 2), on: v => { S.bloom = v; applyMode(); persist(); } }),
+    el('h3', {}, 'Rio e atmosfera'),
+    slider({ id: 'refl', label: 'Reflexo na água', min: 0, max: 2, step: 0.05, value: S.refl, f: v => fmt(v, 2) + '×', on: v => { S.refl = v; applyMode(); persist(); } }),
+    slider({ id: 'ripple', label: 'Ondulação', min: 0, max: 0.12, step: 0.005, value: S.ripple, f: v => fmt(v * 100, 1), on: v => { S.ripple = v; applyMode(); persist(); } }),
+    slider({ id: 'fog', label: 'Névoa / maresia', min: 0, max: 1, step: 0.05, value: S.fog, f: v => fmt(v * 100, 0) + '%', on: v => { S.fog = v; applyMode(); persist(); } }),
+    el('h3', {}, 'Elementos'),
+    toggle({ id: 'tLamps', label: 'Iluminação pública existente', checked: S.lamps, on: v => { S.lamps = v; applyMode(); persist(); } }),
+    toggle({ id: 'tShadow', label: 'Sombras dos projetores (mais pesado)', checked: S.shadows, on: v => { S.shadows = v; rig.shadows = v; rig.applyShadows(); persist(); } }),
+    toggle({ id: 'tPeople', label: 'Pessoas em escala (1,75 m)', checked: S.people, on: v => { S.people = v; people.visible = v; persist(); } }),
+    toggle({ id: 'tCity', label: 'Cidade e barcos', checked: S.city, on: v => { S.city = v; setCity(); persist(); } }),
+    toggle({ id: 'tDims', label: 'Cotas e medidas', checked: S.dims, on: v => { S.dims = v; dims.visible = v; persist(); } }),
+    el('h3', {}, 'Qualidade de renderização'),
+    seg([['leve', 'Leve'], ['media', 'Média'], ['alta', 'Alta']], S.quality, v => { S.quality = v; resize(); rebuildAll(); persist(); }, 'qSeg'),
+    el('p', { class: 'note' }, 'Leve reduz resolução e o número de luzes dinâmicas da prévia. O cálculo de lux sempre usa todas as luminárias.'),
+    el('h3', {}, 'Dimensões adotadas no modelo'),
+    el('div', { class: 'tblwrap' }, el('table', { class: 'qt', html: `
+      <tr><th>Elemento</th><th>Valor</th></tr>
+      <tr><td>Vão entre torres</td><td>${fmt(P.L, 2)} m</td></tr>
+      <tr><td>Largura livre</td><td>${fmt(P.W, 2)} m</td></tr>
+      <tr><td>Piso nas torres / no meio</td><td>+${fmt(P.deckEnd, 2)} / +${fmt(deckY(0), 2)} m</td></tr>
+      <tr><td>Sela dos cabos (topo útil da torre)</td><td>+${fmt(P.towerTop, 2)} m</td></tr>
+      <tr><td>Cabo no meio do vão / flecha</td><td>+${fmt(P.cableLow, 2)} / ${fmt(P.towerTop - P.cableLow, 2)} m</td></tr>
+      <tr><td>Cabos principais</td><td>2 × Ø 38 mm por lado</td></tr>
+      <tr><td>Pendurais</td><td>Ø 16 mm a cada ${fmt(P.hangerStep, 1)} m</td></tr>
+      <tr><td>Pranchas</td><td>150 × 45 mm, junta 12 mm</td></tr>
+      <tr><td>Guarda-corpo</td><td>${fmt(P.railH, 2)} m, tela 50 × 50 mm</td></tr>
+      <tr><td>Praças / cais</td><td>+${fmt(P.ground, 2)} m</td></tr>` })),
+    el('p', { class: 'note' }, 'Vão, largura e materiais vêm dos dados publicados. Cotas, flecha e seções foram estimadas pelas fotos e por pré-dimensionamento; confira com levantamento topográfico antes de usar em projeto executivo.'),
+  );
+}
+function setCity() {
+  env.group.traverse(o => { if (['Edificios_Torres', 'Casas_PassoDeTorres', 'Telhados', 'Barcos', 'Ponte_concreto_referencia'].includes(o.name)) o.visible = S.city; });
+}
+
+// --- Luminárias ---
+const openGroups = new Set();
+let placing = null; // { g, step: 'place'|'aim' }
+function renderLightPane() {
+  const p = $('#pane-luz'); p.innerHTML = '';
+  const sel = el('select', { id: 'presetSel' }, Object.entries(PRESETS).map(([k, v]) => el('option', { value: k, selected: k === S.preset }, v.nome)));
+  p.append(
+    el('h3', {}, 'Cenas prontas'),
+    el('div', { class: 'pair' }, sel, el('button', { class: 'btn primary', type: 'button', onclick: () => {
+      S.preset = sel.value; const custom = S.groups.find(g => g.mount === 'custom');
+      S.groups = presetGroups(sel.value); if (custom && custom.fixtures.length) Object.assign(S.groups.find(g => g.mount === 'custom'), { ...custom, id: S.groups.find(g => g.mount === 'custom').id });
+      rebuildAll(); renderLightPane(); persist(); toast('Cena aplicada: ' + PRESETS[sel.value].nome);
+    } }, 'Aplicar')),
+    el('h3', {}, 'Grupos de luminárias'),
+    el('p', { class: 'note' }, 'Cada grupo é uma linha de luminárias montada num ponto da ponte. Ligue, troque o modelo e ajuste cor, potência, nits e facho. A luz é calculada em candela e lux reais.'),
+  );
+  S.groups.forEach(g => p.append(groupCard(g)));
+}
+function swatchColor(g) { const c = groupColor(g); return '#' + c.getHexString(THREE.SRGBColorSpace); }
+function groupCard(g) {
+  const T = TYPES[g.type], Mo = MOUNTS[g.mount];
+  const open = openGroups.has(g.id);
+  const card = el('div', { class: 'group' + (open ? ' open' : '') });
+  const sw = el('span', { class: 'swatch', style: `background:${g.on ? swatchColor(g) : 'transparent'}` });
+  const sub = el('small', {}, '');
+  const updSub = () => {
+    const rt = rig.rt.get(g.id); const qty = rt ? (T.linear ? `${fmt(rt.length, 0)} m` : `${rt.count} un`) : '';
+    const w = rt ? g.power * (T.linear ? rt.length : rt.count) * g.dim / 100 : 0;
+    sub.textContent = `${TYPES[g.type].curto} · ${qty} · ${fmt(w, 0)} W`;
+    sw.style.background = g.on ? swatchColor(g) : 'transparent';
+  };
+  const onInp = el('input', { type: 'checkbox', checked: g.on, 'aria-label': 'Ligar ' + g.name });
+  onInp.addEventListener('click', e => e.stopPropagation());
+  onInp.addEventListener('change', () => { g.on = onInp.checked; rebuildGroup(g); setTimeout(updSub, 60); });
+  const head = el('div', { class: 'ghead', role: 'button', tabindex: 0 },
+    sw, el('div', { class: 'gtitle' }, el('b', {}, Mo.icon + '  ' + g.name), sub),
+    el('span', { class: 'switch' }, onInp, el('span')));
+  const toggleOpen = () => { if (openGroups.has(g.id)) openGroups.delete(g.id); else openGroups.add(g.id); const n = groupCard(g); card.replaceWith(n); };
+  head.addEventListener('click', toggleOpen);
+  head.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleOpen(); } });
+  card.append(head);
+  setTimeout(updSub, 0);
+  if (!open) return card;
+
+  const body = el('div', { class: 'gbody' });
+  const spec = el('div', { class: 'spec' });
+  const nitsIn = el('input', { type: 'number', id: g.id + '-nits', min: 1, step: 10 });
+  const powIn = el('input', { type: 'number', id: g.id + '-pow', min: T.p[0], max: T.p[1], step: T.p[2], value: g.power });
+  const powSl = el('input', { type: 'range', id: g.id + '-pows', min: T.p[0], max: T.p[1], step: T.p[2], value: g.power });
+  const refresh = () => {
+    const rt = rig.rt.get(g.id); const qty = rt ? (T.linear ? rt.length : rt.count) : 0;
+    const fl = fluxUnit(g) * qty;
+    nitsIn.value = Math.round(nitsOf(g));
+    powIn.value = g.power; powSl.value = g.power;
+    spec.innerHTML = `
+      <div><small>Quantidade</small><span>${T.linear ? fmt(qty, 1) + ' m' : qty + ' un'}</span></div>
+      <div><small>Potência total</small><span>${fmt(g.power * qty * g.dim / 100, 0)} W</span></div>
+      <div><small>Fluxo total</small><span>${fmt(fl, 0)} lm</span></div>
+      <div><small>Eficácia</small><span>${efficacy(g)} lm/W</span></div>
+      <div><small>Intensidade${T.linear ? '/m' : ''}</small><span>${fmt(candela(g), 0)} cd</span></div>
+      <div><small>Luminância</small><span>${fmt(nitsOf(g), 0)} nits</span></div>`;
+    updSub();
+  };
+  const change = (fn, rebuild = true) => (v) => { fn(v); if (rebuild) rebuildGroup(g); requestAnimationFrame(() => requestAnimationFrame(refresh)); };
+
+  // modelo de luminária
+  const typeSel = el('select', { id: g.id + '-type' }, Mo.types.map(t => el('option', { value: t, selected: t === g.type }, TYPES[t].nome)));
+  typeSel.addEventListener('change', () => {
+    g.type = typeSel.value; const NT = TYPES[g.type];
+    g.beam = NT.beams.reduce((a, b) => Math.abs(b - g.beam) < Math.abs(a - g.beam) ? b : a, NT.beams[0]);
+    g.power = Math.min(NT.p[1], Math.max(NT.p[0], g.power)); g.effOverride = null;
+    rebuildGroup(g); requestAnimationFrame(() => { const n = groupCard(g); card.replaceWith(n); });
+  });
+  body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('label', { for: g.id + '-type' }, 'Luminária'), el('b', {}, T.ip)), typeSel, el('p', { class: 'note' }, T.desc)));
+
+  // cor
+  const colorBox = el('div', { class: 'field' });
+  const drawColor = () => {
+    colorBox.innerHTML = '';
+    colorBox.append(el('div', { class: 'lab' }, el('span', {}, 'Cor da luz'), el('b', {}, g.colorMode === 'cct' ? fmt(g.cct) + ' K' : g.rgb.toUpperCase())));
+    colorBox.append(seg([['cct', 'Branco (K)'], ['rgb', 'Cor RGB']], g.colorMode, v => { g.colorMode = v; drawColor(); change(() => {})(); }));
+    if (g.colorMode === 'cct') {
+      const s = el('input', { type: 'range', id: g.id + '-cct', min: 1800, max: 6500, step: 100, value: g.cct, 'aria-label': 'Temperatura de cor' });
+      s.addEventListener('input', () => { g.cct = +s.value; colorBox.querySelector('.lab b').textContent = fmt(g.cct) + ' K'; change(() => {})(); });
+      colorBox.append(el('div', { class: 'cct-track' }), s,
+        el('div', { class: 'swatches' }, [2200, 2700, 3000, 4000, 5000, 6500].map(k => el('button', { type: 'button', title: k + ' K', style: `background:#${cctToSRGB(k).getHexString(THREE.SRGBColorSpace)}`, onclick: () => { g.cct = k; drawColor(); change(() => {})(); } }))));
+    } else {
+      const ci = el('input', { type: 'color', id: g.id + '-rgb', value: g.rgb, 'aria-label': 'Cor RGB' });
+      ci.addEventListener('input', () => { g.rgb = ci.value; colorBox.querySelector('.lab b').textContent = g.rgb.toUpperCase(); change(() => {})(); });
+      const sws = ['#1f2fff', '#2b55ff', '#00b7ff', '#00e0c0', '#22ff66', '#ffd000', '#ff8a00', '#ff2020', '#ff2fa0', '#8a2cff', '#ffffff'];
+      colorBox.append(el('div', { class: 'swatches' }, ci, sws.map(c => el('button', { type: 'button', title: c, style: `background:${c}`, onclick: () => { g.rgb = c; drawColor(); change(() => {})(); } }))));
+    }
+  };
+  drawColor(); body.append(colorBox);
+
+  // potência / nits
+  powSl.addEventListener('input', () => change(v => { g.power = v; })(+powSl.value));
+  powIn.addEventListener('change', () => change(v => { g.power = Math.min(T.p[1], Math.max(T.p[0], v)); })(+powIn.value));
+  nitsIn.addEventListener('change', () => change(v => {
+    const want = powerForNits(g, v); g.power = Math.min(T.p[1], Math.max(T.p[0], Math.round(want / T.p[2]) * T.p[2]));
+    if (Math.abs(want - g.power) / want > 0.05) toast(`Para ${fmt(v)} nits seriam ${fmt(want, 1)} ${T.unit}; limitado à faixa do modelo (${T.p[0]}–${T.p[1]} ${T.unit}).`, 4500);
+  })(+nitsIn.value));
+  body.append(
+    el('div', { class: 'field' }, el('div', { class: 'lab' }, el('label', { for: g.id + '-pows' }, `Potência (${T.unit})`), el('b', {}, `${T.p[0]}–${T.p[1]}`)), el('div', { class: 'pair' }, powSl, powIn)),
+    el('div', { class: 'field' }, el('div', { class: 'lab' }, el('label', { for: g.id + '-nits' }, 'Luminância da superfície emissora (nits)'), el('b', {}, 'cd/m²')), nitsIn,
+      el('p', { class: 'note' }, 'Ao digitar os nits, a potência é recalculada: P = L · Ω · A / (η · dimmer).')),
+    slider({ id: g.id + '-dim', label: 'Dimerização', min: 1, max: 100, step: 1, value: g.dim, f: v => v + '%', on: change(v => { g.dim = v; }) }),
+  );
+  if (T.beams.length > 1) body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('span', {}, 'Abertura do facho'), el('b', {}, g.beam + '°')),
+    seg(T.beams.map(b => [b, b + '°']), g.beam, v => { g.beam = v; body.querySelector('.field .lab b').textContent; change(() => {})(); })));
+  const effIn = el('input', { type: 'number', id: g.id + '-eff', min: 20, max: 220, step: 1, placeholder: 'auto: ' + efficacy({ ...g, effOverride: null }), value: g.effOverride || '' });
+  effIn.addEventListener('change', () => change(v => { g.effOverride = v > 0 ? v : null; })(parseFloat(effIn.value)));
+  body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('label', { for: g.id + '-eff' }, 'Eficácia (lm/W) — vazio = automático pela cor'), el('b', {}, '')), effIn));
+
+  // parâmetros de montagem
+  const isPoint = !T.linear;
+  const mp = Mo.params.filter(pp => !pp.only || (pp.only === 'point') === isPoint);
+  if (mp.length) body.append(el('h3', {}, 'Montagem — ' + Mo.nome));
+  for (const pp of mp) {
+    if (pp.type === 'bool') body.append(toggle({ id: g.id + '-' + pp.k, label: pp.l, checked: g.params[pp.k], on: change(v => { g.params[pp.k] = v; }) }));
+    else if (pp.type === 'select') body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('span', {}, pp.l)), seg(pp.opts, g.params[pp.k], change(v => { g.params[pp.k] = v; }))));
+    else body.append(slider({ id: g.id + '-' + pp.k, label: pp.l, min: pp.min, max: pp.max, step: pp.step, value: g.params[pp.k], f: v => fmt(v, pp.step < 1 ? 2 : 0) + (pp.u ? ' ' + pp.u : ''), on: change(v => { g.params[pp.k] = v; }) }));
+  }
+  if (g.mount === 'custom') {
+    body.append(el('p', { class: 'note', html: `<b>${g.fixtures.length}</b> luminária(s) avulsa(s). Clique em “Posicionar” e depois na ponte, torre, cais ou praça. O segundo clique define para onde ela aponta.` }),
+      el('div', { class: 'btns' },
+        el('button', { class: 'btn primary', type: 'button', onclick: () => startPlacing(g) }, 'Posicionar'),
+        el('button', { class: 'btn', type: 'button', onclick: () => { if (g.fixtures.length) { placing = { g, step: 'aim' }; toast('Clique no ponto que a última luminária deve iluminar. Esc cancela.', 0); } } }, 'Mirar a última'),
+        el('button', { class: 'btn', type: 'button', onclick: () => { g.fixtures.pop(); rebuildGroup(g); const n = groupCard(g); card.replaceWith(n); } }, 'Remover a última'),
+        el('button', { class: 'btn', type: 'button', onclick: () => { g.fixtures = []; rebuildGroup(g); const n = groupCard(g); card.replaceWith(n); } }, 'Limpar')));
+  }
+
+  // efeitos
+  body.append(el('h3', {}, 'Efeito (controle DMX)'));
+  const effSel = el('select', { id: g.id + '-fx' }, EFFECTS.map(([k, l]) => el('option', { value: k, selected: k === g.effect }, l)));
+  effSel.addEventListener('change', () => { g.effect = effSel.value; rebuildGroup(g); requestAnimationFrame(() => { const n = groupCard(g); card.replaceWith(n); }); });
+  body.append(effSel);
+  if (g.effect !== 'estatico') body.append(
+    slider({ id: g.id + '-spd', label: 'Velocidade', min: 0.05, max: 2, step: 0.05, value: g.speed, f: v => fmt(v, 2), on: change(v => { g.speed = v; }) }),
+    slider({ id: g.id + '-lam', label: 'Comprimento da onda', min: 2, max: 60, step: 1, value: g.lambda, f: v => v + ' m', on: change(v => { g.lambda = v; }) }));
+
+  body.append(el('h3', {}, 'Resultado do grupo'), spec,
+    slider({ id: g.id + '-nl', label: 'Luzes dinâmicas na prévia', min: 1, max: 24, step: 1, value: g.nLights, f: v => v, on: change(v => { g.nLights = v; }) }),
+    el('p', { class: 'note' }, 'A prévia agrupa luminárias em poucas luzes para rodar no navegador. O cálculo de lux e o quantitativo usam cada luminária individualmente.'));
+  card.append(body);
+  setTimeout(refresh, 30);
+  return card;
+}
+
+// --- Cálculo ---
+function renderCalc() {
+  const p = $('#pane-calc'); if (!lastCalc) return;
+  const c = lastCalc, st = rig.stats(S.groups);
+  const kwh = st.W / 1000 * S.hours * 30;
+  p.innerHTML = '';
+  const hoursIn = el('input', { type: 'number', id: 'hours', min: 1, max: 24, step: 0.5, value: S.hours });
+  const tarIn = el('input', { type: 'number', id: 'tarifa', min: 0, max: 5, step: 0.01, value: S.tarifa });
+  hoursIn.addEventListener('change', () => { S.hours = +hoursIn.value || 12; renderCalc(); persist(); });
+  tarIn.addEventListener('change', () => { S.tarifa = +tarIn.value || 0; renderCalc(); persist(); });
+  p.append(
+    el('h3', {}, 'Iluminância no piso do tabuleiro'),
+    el('div', { class: 'kpis', html: `
+      <div class="kpi"><small>Média Em</small><b>${fmt(c.Em, 1)}<em>lx</em></b></div>
+      <div class="kpi"><small>Uniformidade U0</small><b>${fmt(c.U0, 2)}</b></div>
+      <div class="kpi"><small>Mínima</small><b>${fmt(c.Emin, 1)}<em>lx</em></b></div>
+      <div class="kpi"><small>Máxima</small><b>${fmt(c.Emax, 1)}<em>lx</em></b></div>` }),
+    toggle({ id: 'tHeat', label: 'Mostrar mapa de falsa cor no piso', checked: S.heat, on: v => { S.heat = v; heat.mesh.visible = v; $('#legend').hidden = !v; persist(); } }),
+    el('p', { class: 'note' }, `Malha de ${c.nx} × ${c.nz} pontos (0,5 m × 0,33 m) sobre os 100 m do piso. Iluminância horizontal ponto a ponto pela lei do inverso do quadrado, E = I(θ)·cos(i)/d², sem refletâncias nem obstruções.`),
+    el('h3', {}, 'NBR 5101 — vias de pedestres (referência)'),
+    el('div', { class: 'tblwrap' }, el('table', { class: 'qt', html: `<tr><th>Classe</th><th>Em mín.</th><th>U0 mín.</th><th>Situação</th></tr>` +
+      NBR5101.map(k => `<tr><td title="${k.uso}">${k.c}</td><td>${k.Em} lx</td><td>${fmt(k.U0, 2)}</td><td><span class="pill ${c.Em >= k.Em && c.U0 >= k.U0 ? 'ok' : 'no'}">${c.Em >= k.Em && c.U0 >= k.U0 ? 'atende' : 'não atende'}</span></td></tr>`).join('') })),
+    el('p', { class: 'note' }, 'Valores de referência das classes P1–P4. Confira a edição vigente da norma e o enquadramento definido pela prefeitura.'),
+    el('h3', {}, 'Energia'),
+    el('div', { class: 'kpis', html: `
+      <div class="kpi"><small>Potência instalada</small><b>${fmt(st.W, 0)}<em>W</em></b></div>
+      <div class="kpi"><small>Fluxo instalado</small><b>${fmt(st.lm, 0)}<em>lm</em></b></div>
+      <div class="kpi"><small>Consumo mensal</small><b>${fmt(kwh, 0)}<em>kWh</em></b></div>
+      <div class="kpi"><small>Custo mensal</small><b>R$ ${fmt(kwh * S.tarifa, 0)}</b></div>` }),
+    el('div', { class: 'pair' }, el('label', { for: 'hours' }, 'Horas acesas por noite'), hoursIn),
+    el('div', { class: 'pair' }, el('label', { for: 'tarifa' }, 'Tarifa (R$/kWh)'), tarIn),
+    el('p', { class: 'note' }, 'Não inclui perdas de fontes/drivers (some ~8–12%) nem dimerização programada por horário.'),
+    el('h3', {}, 'Quantitativo'),
+    el('div', { class: 'tblwrap' }, el('table', { class: 'qt', html: `<tr><th>Grupo</th><th>Qtd</th><th>W</th><th>lm</th></tr>` +
+      st.rows.map(r => `<tr><td>${r.g.name}<br><small style="color:var(--muted)">${r.T.curto} · ${r.g.colorMode === 'cct' ? r.g.cct + ' K' : r.g.rgb} · ${r.g.beam}°</small></td><td>${r.T.linear ? fmt(r.qty, 0) + ' m' : r.qty}</td><td>${fmt(r.w, 0)}</td><td>${fmt(r.f, 0)}</td></tr>`).join('') +
+      `<tr><td><b>Total</b></td><td></td><td><b>${fmt(st.W, 0)}</b></td><td><b>${fmt(st.lm, 0)}</b></td></tr>` })),
+  );
+}
+// legenda
+$('#legendBar').style.background = `linear-gradient(90deg, ${[0, 1, 2, 5, 10, 20, 50, 100].map((v, i, a) => { const c = falseColor(Math.max(v, 0.01)); return `rgb(${c}) ${i / (a.length - 1) * 100}%`; }).join(',')})`;
+
+// --- Arquivo ---
+function renderFilePane() {
+  const p = $('#pane-arq'); p.innerHTML = '';
+  const file = el('input', { type: 'file', id: 'loadJson', accept: '.json,application/json', hidden: true });
+  file.addEventListener('change', async () => {
+    const f = file.files[0]; if (!f) return;
+    try { const d = JSON.parse(await f.text()); loadProject(d); toast('Projeto carregado: ' + f.name); }
+    catch (e) { toast('Não consegui ler esse arquivo. Use um .json salvo por esta página.', 5000); }
+    file.value = '';
+  });
+  p.append(
+    el('h3', {}, 'Modelo 3D'),
+    el('div', { class: 'btns' },
+      el('button', { class: 'btn primary', type: 'button', onclick: () => exportGLB('ponte') }, 'Baixar GLB — ponte + LEDs'),
+      el('button', { class: 'btn', type: 'button', onclick: () => exportGLB('cena') }, 'Baixar GLB — cena completa')),
+    el('p', { class: 'note', html: 'O GLB abre no <b>Blender</b> (Arquivo › Importar › glTF 2.0), Rhino 8, 3ds Max e SketchUp. Unidades em metros. As luminárias vão como luzes spot (KHR_lights_punctual) com intensidade em candela, posição e mira.' }),
+    el('h3', {}, 'Projeto luminotécnico'),
+    el('div', { class: 'btns' },
+      el('button', { class: 'btn', type: 'button', onclick: exportCSV }, 'Quantitativo (.csv)'),
+      el('button', { class: 'btn', type: 'button', onclick: () => download(new Blob([JSON.stringify(serialize(), null, 2)], { type: 'application/json' }), 'ponte-pensil-iluminacao.json') }, 'Salvar projeto (.json)'),
+      el('button', { class: 'btn', type: 'button', onclick: () => file.click() }, 'Abrir projeto (.json)'), file),
+    el('h3', {}, 'Imagem'),
+    el('div', { class: 'btns' }, el('button', { class: 'btn', type: 'button', onclick: screenshot }, 'Capturar vista atual (.png)')),
+    el('h3', {}, 'Documentação'),
+    el('p', { class: 'note', html: '<a href="guia.html" style="color:var(--led)">Memorial técnico de modelagem</a>: geometria, coordenadas, catenária, pendurais, tabuleiro, guarda-corpo, Geometry Nodes/Grasshopper, materiais e câmera.<br><a href="blender/ponte_pensil_blender.py" download style="color:var(--led)">ponte_pensil_blender.py</a>: gera a ponte paramétrica dentro do Blender (Scripting › Run Script).' }),
+    el('h3', {}, 'Restaurar'),
+    el('button', { class: 'btn', type: 'button', onclick: () => { S.groups = presetGroups('cenica'); S.preset = 'cenica'; rebuildAll(); renderLightPane(); persist(); toast('Projeto restaurado para a proposta cênica.'); } }, 'Voltar à proposta inicial'),
+  );
+}
+function loadProject(d) {
+  if (!d || !Array.isArray(d.groups)) throw new Error('formato');
+  const { groups, ...rest } = d; Object.assign(S, rest); S.groups = groups.map(g => G({ ...g, id: undefined }));
+  applyMode(); people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
+  rebuildAll(); renderScenePane(); renderLightPane(); renderFilePane(); persist();
+}
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function zipStore(name, bytes) { // zip sem compressão, um arquivo
+  let crc = 0xFFFFFFFF; for (let i = 0; i < bytes.length; i++) crc = CRC[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8); crc = (crc ^ 0xFFFFFFFF) >>> 0;
+  const nm = new TextEncoder().encode(name), lh = new DataView(new ArrayBuffer(30)), ch = new DataView(new ArrayBuffer(46)), end = new DataView(new ArrayBuffer(22));
+  [[0, 0x04034b50, 4], [4, 20, 2], [14, crc, 4], [18, bytes.length, 4], [22, bytes.length, 4], [26, nm.length, 2]].forEach(([o, v, z]) => z === 4 ? lh.setUint32(o, v, true) : lh.setUint16(o, v, true));
+  [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [16, crc, 4], [20, bytes.length, 4], [24, bytes.length, 4], [28, nm.length, 2]].forEach(([o, v, z]) => z === 4 ? ch.setUint32(o, v, true) : ch.setUint16(o, v, true));
+  const cdOff = 30 + nm.length + bytes.length;
+  [[0, 0x06054b50, 4], [8, 1, 2], [10, 1, 2], [12, 46 + nm.length, 4], [16, cdOff, 4]].forEach(([o, v, z]) => z === 4 ? end.setUint32(o, v, true) : end.setUint16(o, v, true));
+  return new Blob([lh, nm, bytes, ch, nm, end], { type: 'application/zip' });
+}
+let dlCap;
+async function download(blob, name) {
+  if (window.claude && window.claude.use) {
+    if (dlCap === undefined) dlCap = await window.claude.use('downloads').catch(() => null);
+    if (dlCap) {
+      let data = blob, fname = name;
+      if (/\.glb$/.test(name)) { data = zipStore(name, new Uint8Array(await blob.arrayBuffer())); fname = name.replace(/\.glb$/, '.zip'); }
+      try { await dlCap.save({ filename: fname, data }); toast('Arquivo salvo: ' + fname); }
+      catch (e) { if (e && e.code !== 'declined') toast('Não foi possível salvar aqui (' + (e.code || 'erro') + '). Use a versão do GitHub Pages.', 5000); }
+      return;
+    }
+  }
+  const a = el('a', { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+function exportCSV() {
+  const st = rig.stats(S.groups);
+  const head = ['Grupo', 'Montagem', 'Luminária', 'IP', 'Quantidade', 'Unidade', 'Potência unitária', 'Unid. potência', 'Dimer (%)', 'Potência total (W)', 'Eficácia (lm/W)', 'Fluxo total (lm)', 'Facho (°)', 'Cor', 'Intensidade (cd)', 'Luminância (nits)', 'Efeito'];
+  const rows = st.rows.map(r => [r.g.name, MOUNTS[r.g.mount].nome, r.T.nome, r.T.ip, fmt(r.qty, r.T.linear ? 1 : 0), r.T.linear ? 'm' : 'un', fmt(r.g.power, 2), r.T.unit, r.g.dim, fmt(r.w, 0), efficacy(r.g), fmt(r.f, 0), r.g.beam, r.g.colorMode === 'cct' ? r.g.cct + ' K' : r.g.rgb, fmt(candela(r.g), 0), fmt(nitsOf(r.g), 0), EFFECTS.find(e => e[0] === r.g.effect)[1]]);
+  const c = lastCalc;
+  rows.push([], ['Total', '', '', '', '', '', '', '', '', fmt(st.W, 0), '', fmt(st.lm, 0)], ['Em piso (lx)', fmt(c.Em, 1)], ['U0', fmt(c.U0, 2)], ['Emin (lx)', fmt(c.Emin, 1)], ['Emax (lx)', fmt(c.Emax, 1)]);
+  const csv = '﻿' + [head, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
+  download(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'ponte-pensil-quantitativo.csv');
+}
+function screenshot() { composer.render(); renderer.domElement.toBlob(b => b && download(b, 'ponte-pensil-vista.png'), 'image/png'); }
+
+// --- Exportação GLB ---
+function exportMat(m) {
+  if (m.isShaderMaterial) {
+    const c = m.uniforms.uColor.value.clone(); const mx = Math.max(c.r, c.g, c.b, 1e-6);
+    return new THREE.MeshStandardMaterial({ color: 0x111111, emissive: c.multiplyScalar(1 / mx), emissiveIntensity: 1, name: 'LED_emissor' });
+  }
+  if (m === M.mesh) return new THREE.MeshStandardMaterial({ color: 0xf4f6f7, transparent: true, opacity: 0.35, side: THREE.DoubleSide, metalness: 0.2, roughness: 0.5, name: 'Tela_soldada' });
+  if (m.isMeshBasicMaterial) { const c = m.color.clone(); const mx = Math.max(c.r, c.g, c.b, 1e-6); return new THREE.MeshStandardMaterial({ color: 0x111111, emissive: c.multiplyScalar(1 / mx), name: 'Emissor' }); }
+  const n = m.clone(); n.emissiveIntensity = 0; return n;
+}
+function cleanGeo(geo) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', geo.attributes.position.clone());
+  if (geo.attributes.normal) g.setAttribute('normal', geo.attributes.normal.clone()); else g.computeVertexNormals();
+  if (geo.attributes.uv) g.setAttribute('uv', geo.attributes.uv.clone()); else g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(geo.attributes.position.count * 2), 2));
+  if (geo.index) g.setIndex(geo.index.clone());
+  return g;
+}
+function bake(root, out, withLights) {
+  root.updateMatrixWorld(true);
+  const m4 = new THREE.Matrix4();
+  root.traverseVisible(o => {
+    if (o === water) { const p = new THREE.Mesh(new THREE.PlaneGeometry(2 * P.quayX, 1600).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x1b2a30, roughness: 0.05, metalness: 0.1, name: 'Agua' })); p.name = 'Rio_Mampituba'; out.add(p); return; }
+    if (o.isInstancedMesh) {
+      const geos = [];
+      for (let i = 0; i < o.count; i++) { o.getMatrixAt(i, m4); m4.premultiply(o.matrixWorld); geos.push(cleanGeo(o.geometry).applyMatrix4(m4)); }
+      const mesh = new THREE.Mesh(mergeGeometries(geos), exportMat(o.material)); mesh.name = o.name || o.parent?.name || 'Instancias'; out.add(mesh);
+    } else if (o.isMesh && !o.isPoints) {
+      if (o === sky.dome || o === heat.mesh) return;
+      const mesh = new THREE.Mesh(cleanGeo(o.geometry).applyMatrix4(o.matrixWorld), exportMat(o.material)); mesh.name = o.name || o.parent?.name || 'Malha'; out.add(mesh);
+    } else if (withLights && o.isSpotLight && o.parent && o.parent.parent === rig.root) {
+      const c = o.color.clone(), mx = Math.max(c.r, c.g, c.b, 1e-6);
+      const L = new THREE.SpotLight(c.multiplyScalar(1 / mx), o.intensity * mx, 0, o.angle, o.penumbra, 2);
+      L.name = o.parent.name; L.position.setFromMatrixPosition(o.matrixWorld);
+      L.lookAt(new THREE.Vector3().setFromMatrixPosition(o.target.matrixWorld));
+      L.add(L.target); L.target.position.set(0, 0, -1); out.add(L);
+    }
+  });
+}
+async function exportGLB(scope) {
+  toast('Gerando o GLB…', 0);
+  await new Promise(r => setTimeout(r, 30));
+  const out = new THREE.Group(); out.name = scope === 'cena' ? 'Ponte_Pensil_Mampituba_cena' : 'Ponte_Pensil_Mampituba';
+  const b = new THREE.Group(); b.name = 'Estrutura'; bake(bridge, b, false); out.add(b);
+  const l = new THREE.Group(); l.name = 'Iluminacao_LED'; bake(rig.root, l, true); out.add(l);
+  if (scope === 'cena') { const e = new THREE.Group(); e.name = 'Entorno'; bake(env.group, e, false); bake(water, e, false); if (people.visible) bake(people, e, false); out.add(e); }
+  new GLTFExporter().parse(out, (res) => {
+    download(new Blob([res], { type: 'model/gltf-binary' }), scope === 'cena' ? 'ponte-pensil-cena.glb' : 'ponte-pensil.glb');
+    toast('GLB pronto. Importe no Blender em Arquivo › Importar › glTF 2.0.');
+  }, (err) => { console.error(err); toast('Falhou ao gerar o GLB: ' + err.message, 6000); }, { binary: true, maxTextureSize: 1024 });
+}
+
+// =====================================================================
+//  Clique: medir cotas e posicionar luminárias avulsas
+// =====================================================================
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+const pickables = [bridge, ...env.pick, water];
+function hitAt(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hits = ray.intersectObjects(pickables, true).filter(h => h.object.visible);
+  return hits[0];
+}
+function startPlacing(g) { placing = { g, step: 'place' }; toast('Clique onde a luminária vai ficar (ponte, torre, cais ou praça). Esc cancela.', 0); }
+let downPos = null, hoverT = 0;
+renderer.domElement.addEventListener('pointerdown', e => { downPos = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (!downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > 5) return;
+  const h = hitAt(e); if (!h) return;
+  if (placing) {
+    const g = placing.g;
+    if (placing.step === 'place') {
+      const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : V(0, 1, 0);
+      if (h.object.isInstancedMesh && h.instanceId !== undefined) { const m = new THREE.Matrix4(); h.object.getMatrixAt(h.instanceId, m); n.copy(h.face.normal).transformDirection(m).transformDirection(h.object.matrixWorld); }
+      const p = h.point.clone().addScaledVector(n, 0.06);
+      g.fixtures.push({ p: p.toArray().map(v => +v.toFixed(3)), d: n.toArray().map(v => +v.toFixed(3)) });
+      g.on = true; placing.step = 'aim'; rebuildGroup(g);
+      toast('Agora clique no ponto que ela deve iluminar.', 0);
+    } else {
+      const f = g.fixtures[g.fixtures.length - 1];
+      const d = h.point.clone().sub(V(...f.p)).normalize(); f.d = d.toArray().map(v => +v.toFixed(3));
+      placing = null; rebuildGroup(g); toast('Luminária posicionada e mirada.');
+      setTimeout(renderLightPane, 80);
+    }
+  }
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  const now = performance.now(); if (now - hoverT < 90) return; hoverT = now;
+  const h = hitAt(e), c = $('#coord');
+  if (!h) { c.hidden = true; return; }
+  c.hidden = false;
+  c.innerHTML = `<small>Cursor${placing ? ' — ' + (placing.step === 'place' ? 'posicionar' : 'mirar') : ''}</small>X ${fmt(h.point.x, 2)} · Z ${fmt(h.point.z, 2)} · cota ${h.point.y >= 0 ? '+' : ''}${fmt(h.point.y, 2)} m`;
+});
+renderer.domElement.addEventListener('pointerleave', () => { $('#coord').hidden = true; });
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && placing) { placing = null; toast('Posicionamento cancelado.'); } });
+
+// =====================================================================
+//  Laço principal
+// =====================================================================
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight; if (!w || !h) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr);
+  renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
+  composer.setPixelRatio(dpr); composer.setSize(w, h);
+  labelRenderer.setSize(w, h);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  const q = QUALITY[S.quality].refl;
+  water.getRenderTarget().setSize(Math.round(w * dpr * q), Math.round(h * dpr * q));
+}
+new ResizeObserver(resize).observe(stage);
+
+// luzes que atingem a água (poças de luz) → uniforms do shader do rio
+const _wp = V(), _wt = V();
+function feedWaterLights() {
+  let n = 0;
+  const push = (L) => {
+    if (n >= 16 || !L.visible || L.intensity <= 0) return;
+    L.getWorldPosition(_wp); if (Math.abs(_wp.x) > P.quayX + 2 || _wp.y > 16) return;
+    L.target.getWorldPosition(_wt); const d = _wt.sub(_wp).normalize(); if (d.y > -0.05) return;
+    WU.lPos.value[n].copy(_wp); WU.lDir.value[n].copy(d);
+    WU.lCol.value[n].set(L.color.r, L.color.g, L.color.b).multiplyScalar(L.intensity);
+    WU.lCos.value[n] = Math.cos(L.angle); n++;
+  };
+  for (const g of S.groups) { if (!g.on) continue; const rt = rig.rt.get(g.id); if (rt) for (const l of rt.lights) push(l.light); }
+  WU.lN.value = n;
+}
+const clock = new THREE.Clock();
+function frame() {
+  const t = clock.getElapsedTime();
+  if (tween) {
+    const k = Math.min(1, (performance.now() - tween.s) / tween.d), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    camera.position.lerpVectors(tween.p0, tween.p1, e); controls.target.lerpVectors(tween.t0, tween.t1, e);
+    if (k >= 1) tween = null;
+  }
+  controls.update();
+  if (camera.position.y < 0.4) camera.position.y = 0.4;
+  WU.time.value = t;
+  rig.animate(S.groups, t);
+  feedWaterLights();
+  composer.render();
+  labelRenderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+// inicialização
+people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
+applyMode(); resize(); rebuildAll();
+renderScenePane(); renderLightPane(); renderFilePane();
+try { const tab = localStorage.getItem('ponte-pensil-tab'); if (tab) document.querySelector(`.tabs button[data-tab="${tab}"]`)?.click(); } catch (e) { /* ignora */ }
+if (window.innerWidth <= 820) { $('#panel').classList.add('min'); $('#sheetToggle').textContent = '▴'; }
+window.__ponte = { applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
+requestAnimationFrame(frame);
