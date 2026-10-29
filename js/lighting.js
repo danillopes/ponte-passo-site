@@ -273,7 +273,7 @@ export class LightRig {
     rt.emitMats.push(emat);
     const visible = g.on;
     obj.visible = visible;
-    const nL = Math.max(1, Math.round(g.nLights * this.budgetScale));
+    const nL = Math.max(1, g._alloc ?? Math.round(g.nLights * this.budgetScale));
 
     if (T.linear) {
       const lines = M.lines ? M.lines(g) : [];
@@ -288,7 +288,7 @@ export class LightRig {
         l._len = len; l._pts = pts; l._base = base; offset += len; rt.length += len;
         // elementos para cálculo: 0,5 m
         const sm = sampleLine(pts, 0.5);
-        sm.forEach((o, i) => { const a = sm[Math.max(0, i - 1)].p, b = sm[Math.min(sm.length - 1, i + 1)].p; const t = b.clone().sub(a); if (t.lengthSq() < 1e-8) t.copy(pts[pts.length - 1]).sub(pts[0]); rt.elems.push({ p: o.p, d: l.dir, I: I0 * 0.5, half, t: t.normalize() }); });
+        sm.forEach((o, i) => { const a = sm[Math.max(0, i - 1)].p, b = sm[Math.min(sm.length - 1, i + 1)].p; const t = b.clone().sub(a); if (t.lengthSq() < 1e-8) t.copy(pts[pts.length - 1]).sub(pts[0]); rt.elems.push({ p: o.p, d: l.dir, I: I0 * 0.5, half, t: t.normalize(), c: cNorm }); });
       });
       if (geos.length) { const m = new THREE.Mesh(mergeGeometries(geos), emat); m.name = 'Emissor_linear'; obj.add(m); }
       rt.count = lines.length;
@@ -315,7 +315,7 @@ export class LightRig {
         lens.geometry.setAttribute('aS', new THREE.InstancedBufferAttribute(aS, 1));
         body.castShadow = false; body.name = 'Corpo_luminaria'; lens.name = 'Lente';
         obj.add(body, lens);
-        pts.forEach(f => rt.elems.push({ p: f.p, d: f.d, I: I0, half }));
+        pts.forEach(f => rt.elems.push({ p: f.p, d: f.d, I: I0, half, c: cNorm }));
         // agrega luminárias em nL luzes
         const n = Math.min(nL, pts.length), chunk = pts.length / n;
         for (let i = 0; i < n; i++) {
@@ -386,7 +386,7 @@ export function computeGrid(rig, groups, dx = 0.5, nz = 5) {
   const xs = [], zs = [];
   for (let x = -H() + dx / 2; x < H(); x += dx) xs.push(x);
   for (let j = 0; j < nz; j++) zs.push(-0.65 + 1.3 * j / (nz - 1));
-  const E = new Float32Array(xs.length * nz);
+  const E = new Float32Array(xs.length * nz), RGB = new Float32Array(xs.length * nz * 3);
   const elems = [];
   for (const g of groups) { if (!g.on) continue; const rt = rig.rt.get(g.id); if (rt) elems.push(...rt.elems); }
   const q = V(), v = V();
@@ -410,14 +410,15 @@ export function computeGrid(rig, groups, dx = 0.5, nz = 5) {
           I = el.I * soft(th, el.half);
         }
         if (I <= 0) continue;
-        const ci = (el.p.y - y) / d; e += I * ci / d2;
+        const ci = (el.p.y - y) / d, ee = I * ci / d2; e += ee;
+        if (el.c) { const k = (i * nz + j) * 3; RGB[k] += ee * el.c.r; RGB[k + 1] += ee * el.c.g; RGB[k + 2] += ee * el.c.b; }
       }
       E[i * nz + j] = e;
     }
   }
   let sum = 0, mn = Infinity, mx = 0; for (const e of E) { sum += e; mn = Math.min(mn, e); mx = Math.max(mx, e); }
   const Em = sum / E.length;
-  return { E, xs, zs, nx: xs.length, nz, Em, Emin: mn, Emax: mx, U0: Em > 0 ? mn / Em : 0 };
+  return { E, RGB, xs, zs, nx: xs.length, nz, Em, Emin: mn, Emax: mx, U0: Em > 0 ? mn / Em : 0 };
 }
 
 function soft(th, half) { if (th <= half) return 1; if (th < half * 1.3) return 1 - (th - half) / (half * 0.3); return 0; }

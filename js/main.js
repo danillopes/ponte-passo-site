@@ -8,7 +8,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { P, H, deckY, cableY, stairSteps, makeTextures, makeMaterials, buildBridge, buildEnvironment, buildPeople, buildSky, RiverShader } from './model.js';
+import { P, H, deckY, cableY, stairSteps, makeTextures, makeMaterials, deckLight, buildBridge, buildEnvironment, buildPeople, buildSky, RiverShader } from './model.js';
 import { TYPES, MOUNTS, EFFECTS, LightRig, computeGrid, falseColor, FALSE_STOPS, NBR5101, groupColor, efficacy, fluxUnit, candela, nitsOf, powerForNits, cctToSRGB } from './lighting.js';
 
 const $ = (s) => document.querySelector(s);
@@ -26,14 +26,14 @@ function G(o) {
 }
 function baseGroups() {
   return [
-    G({ name: 'Fita nos cabos principais', mount: 'cable', type: 'strip', beam: 120, power: 1, nLights: 12 }),
-    G({ name: 'Linear sob o corrimão', mount: 'handrail', type: 'linearRail', beam: 40, power: 0.15, nLights: 14 }),
-    G({ name: 'Pixels nos pendurais', mount: 'hangers', type: 'dot', beam: 120, power: 2, nLights: 8 }),
+    G({ name: 'Fita nos cabos principais', mount: 'cable', type: 'strip', beam: 120, power: 1, nLights: 8 }),
+    G({ name: 'Linear sob o corrimão', mount: 'handrail', type: 'linearRail', beam: 40, power: 0.15, nLights: 8 }),
+    G({ name: 'Pixels nos pendurais', mount: 'hangers', type: 'dot', beam: 120, power: 2, nLights: 6 }),
     G({ name: 'Projetores nas torres', mount: 'towerUp', type: 'flood', beam: 25, power: 12, nLights: 8 }),
     G({ name: 'Washers no pórtico', mount: 'towerTop', type: 'washer', beam: 45, power: 10, nLights: 4 }),
-    G({ name: 'Washers sob o tabuleiro', mount: 'underDeck', type: 'washer', beam: 30, power: 8, nLights: 8 }),
+    G({ name: 'Washers sob o tabuleiro', mount: 'underDeck', type: 'washer', beam: 30, power: 8, nLights: 6 }),
     G({ name: 'Projetores no cais', mount: 'quay', type: 'flood', beam: 10, power: 30, nLights: 4 }),
-    G({ name: 'Balizadores no rodapé', mount: 'postFoot', type: 'bollard', beam: 60, power: 2, nLights: 8 }),
+    G({ name: 'Balizadores no rodapé', mount: 'postFoot', type: 'bollard', beam: 60, power: 2, nLights: 6 }),
     G({ name: 'Balizadores das escadas', mount: 'stairs', type: 'bollard', beam: 60, power: 3, nLights: 4 }),
     G({ name: 'Luminárias avulsas', mount: 'custom', type: 'flood', beam: 25, power: 30, nLights: 6 }),
   ];
@@ -73,26 +73,30 @@ function presetGroups(key) {
   return gs;
 }
 
+const IS_MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(screen.width, screen.height) < 820;
 const S = {
   mode: 'noite', ev: 0, bloom: 0.35, refl: 1, ripple: 0.035, fog: 0.35, lamps: true, shadows: false,
-  people: true, city: true, dims: false, heat: false, quality: 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
+  people: true, city: true, dims: false, heat: false, quality: IS_MOBILE ? 'leve' : 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
   groups: presetGroups('cenica'),
 };
 try {
-  const saved = JSON.parse(localStorage.getItem('ponte-pensil-v2') || 'null');
+  const saved = JSON.parse(localStorage.getItem('ponte-pensil-v3') || 'null');
   if (saved && saved.groups) { Object.assign(S, saved, { groups: saved.groups.map(g => G({ ...g, id: undefined })) }); }
 } catch (e) { /* armazenamento indisponível */ }
-const persist = debounce(() => { try { localStorage.setItem('ponte-pensil-v2', JSON.stringify(serialize())); } catch (e) { /* ignora */ } }, 400);
-function serialize() { const { groups, ...rest } = S; return { ...rest, groups: groups.map(({ id, ...g }) => g) }; }
+const perf = { idle: false, frame: 0, last: performance.now(), lastInput: performance.now(), dpr: 1, scale: 1, acc: 0, n: 0, checkAt: performance.now() + 2000 };
+const persist = debounce(() => { try { localStorage.setItem('ponte-pensil-v3', JSON.stringify(serialize())); } catch (e) { /* ignora */ } }, 400);
+function serialize() { const { groups, ...rest } = S; return { ...rest, groups: groups.map(({ id, _alloc, ...g }) => g) }; }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
 // =====================================================================
 //  Renderizador e cena
 // =====================================================================
 const stage = $('#stage');
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false });
 renderer.toneMapping = THREE.NoToneMapping;
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.autoUpdate = false; // a cena é estática: sombras só são refeitas quando algo muda
+const shadowsDirty = () => { renderer.shadowMap.needsUpdate = true; };
 stage.prepend(renderer.domElement);
 const labelRenderer = new CSS2DRenderer({ element: $('#labels') });
 
@@ -110,9 +114,15 @@ const people = buildPeople(M); scene.add(people);
 const sky = buildSky(); scene.add(sky.dome, sky.stars);
 scene.fog = new THREE.FogExp2(0x000000, 0.001);
 
-const water = new Reflector(new THREE.PlaneGeometry(2 * P.quayX, 1600), { textureWidth: 1024, textureHeight: 1024, clipBias: 0.003, shader: RiverShader, multisample: 4 });
+const water = new Reflector(new THREE.PlaneGeometry(2 * P.quayX, 1600), { textureWidth: 512, textureHeight: 512, clipBias: 0.003, shader: RiverShader, multisample: IS_MOBILE ? 0 : 4 });
 water.rotation.x = -Math.PI / 2; water.name = 'Rio_Mampituba'; scene.add(water);
-{ const ob = water.onBeforeRender.bind(water); water.onBeforeRender = (...a) => { const sv = sky.stars.visible, hv = heat.mesh.visible, dv = dims.visible; sky.stars.visible = false; heat.mesh.visible = false; dims.visible = false; ob(...a); sky.stars.visible = sv; heat.mesh.visible = hv; dims.visible = dv; }; }
+// reflexo: some com o que não aparece na água; parado, atualiza só 1 quadro a cada 3
+const reflHide = [];
+{ const ob = water.onBeforeRender.bind(water); water.onBeforeRender = (...a) => {
+  if (perf.idle && perf.frame % 3 !== 0) return;
+  const vis = reflHide.map(o => o.visible); reflHide.forEach(o => { o.visible = false; });
+  ob(...a); reflHide.forEach((o, i) => { o.visible = vis[i]; });
+}; }
 const WU = water.material.uniforms;
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x000000, 1); scene.add(hemi);
@@ -122,7 +132,7 @@ scene.add(sun, sun.target);
 
 // iluminação pública existente (sódio/LED 2200 K) nos postes mais próximos
 const streetLights = new THREE.Group(); streetLights.name = 'Iluminacao_publica_existente';
-env.lampPos.filter(p => Math.abs(p.z) < 60).forEach(p => {
+env.lampPos.filter(p => Math.abs(p.z) < 30).forEach(p => {
   const l = new THREE.SpotLight(cctToSRGB(2200), 2600, 0, 1.15, 0.6, 2);
   l.position.copy(p); l.target.position.copy(p).add(V(0, -10, 0)); streetLights.add(l, l.target);
 });
@@ -151,7 +161,7 @@ const heat = (() => {
 // =====================================================================
 //  Pós-processamento: exposição → bloom → curva de tons por canal máximo
 // =====================================================================
-const composerRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+const composerRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: IS_MOBILE ? 0 : 4 });
 const composer = new EffectComposer(renderer, composerRT);
 composer.addPass(new RenderPass(scene, camera));
 const exposurePass = new ShaderPass({
@@ -204,7 +214,7 @@ function applyMode() {
   scene.fog.color.setRGB(...m.hor); scene.fog.density = S.fog * 0.0045;
   WU.body.value.setRGB(...m.body); WU.reflectivity.value = S.refl; WU.distortion.value = S.ripple;
   streetLights.visible = S.lamps && S.mode !== 'dia';
-  bloom.strength = S.bloom;
+  bloom.strength = S.bloom; shadowsDirty();
   heat.mat.color.setScalar(0.85 / exposure);
   dimMat.color.setScalar(0.9 / exposure);
 }
@@ -239,12 +249,32 @@ function dimLabel(text, p) { const d = document.createElement('div'); d.classNam
 // =====================================================================
 //  Luzes LED: construção, cálculo e HUD
 // =====================================================================
-const QUALITY = { leve: { dpr: 1, budget: 0.5, refl: 0.35 }, media: { dpr: 1.5, budget: 1, refl: 0.5 }, alta: { dpr: 2, budget: 1.6, refl: 0.75 } };
+const QUALITY = { leve: { dpr: 1, lights: 12, refl: 0.3, msaa: 0, bloom: 0.5 }, media: { dpr: 1.5, lights: 28, refl: 0.45, msaa: 4, bloom: 1 }, alta: { dpr: 2, lights: 44, refl: 0.7, msaa: 4, bloom: 1 } };
 let lastCalc = null;
-function rebuildAll() { rig.budgetScale = QUALITY[S.quality].budget; rig.shadows = S.shadows; rig.rebuildAll(S.groups); scheduleCalc(); }
+// orçamento global de luzes dinâmicas: a prévia nunca passa do limite da qualidade;
+// grupos que iluminam o piso (corrimão, rodapé, escadas, pórtico) têm prioridade
+const FLOOR_MOUNTS = ['handrail', 'postFoot', 'stairs', 'towerTop'];
+function allocate() {
+  const B = QUALITY[S.quality].lights, on = S.groups.filter(g => g.on);
+  const want = on.reduce((a, g) => a + g.nLights, 0), out = new Map();
+  if (want <= B) { on.forEach(g => out.set(g.id, g.nLights)); return out; }
+  const w = (g) => g.nLights * (FLOOR_MOUNTS.includes(g.mount) ? 2 : 1), W = on.reduce((a, g) => a + w(g), 0);
+  let used = 0;
+  on.forEach(g => { const n = Math.min(g.nLights, Math.max(Math.min(2, g.nLights), Math.floor(B * w(g) / W))); out.set(g.id, n); used += n; });
+  const order = [...on].sort((a, b) => w(b) - w(a));
+  for (let i = 0; used < B && i < order.length * 4; i++) { const g = order[i % order.length]; if (out.get(g.id) < g.nLights) { out.set(g.id, out.get(g.id) + 1); used++; } }
+  return out;
+}
+function applyAlloc() { const a = allocate(); let changed = false; S.groups.forEach(g => { const n = a.get(g.id) ?? g.nLights; if (g._alloc !== n) { changed = true; g._alloc = n; } }); return changed; }
+function rebuildAll() { applyAlloc(); rig.shadows = S.shadows; rig.rebuildAll(S.groups); shadowsDirty(); scheduleCalc(); }
 const pendingBuild = new Set();
 function rebuildGroup(g) { pendingBuild.add(g); requestAnimationFrame(flushBuild); }
-function flushBuild() { if (!pendingBuild.size) return; pendingBuild.forEach(g => rig.build(g)); pendingBuild.clear(); rig.applyShadows(); scheduleCalc(); persist(); }
+function flushBuild() {
+  if (!pendingBuild.size) return;
+  if (applyAlloc()) rig.rebuildAll(S.groups);
+  else pendingBuild.forEach(g => rig.build(g));
+  pendingBuild.clear(); rig.applyShadows(); shadowsDirty(); scheduleCalc(); persist();
+}
 const scheduleCalc = debounce(runCalc, 180);
 function runCalc() {
   lastCalc = computeGrid(rig, S.groups);
@@ -254,6 +284,13 @@ function runCalc() {
     heat.data[k] = c[0]; heat.data[k + 1] = c[1]; heat.data[k + 2] = c[2]; heat.data[k + 3] = 255;
   }
   heat.tex.needsUpdate = true;
+  // mapa de luz das pranchas = iluminância calculada (todas as luminárias, com cor)
+  const dl = deckLight.tex.image.data, RGB = lastCalc.RGB, h16 = THREE.DataUtils.toHalfFloat;
+  for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+    const k = (j * deckLight.nx + i) * 4, q = (i * nz + j) * 3;
+    dl[k] = h16(Math.min(RGB[q], 6e4)); dl[k + 1] = h16(Math.min(RGB[q + 1], 6e4)); dl[k + 2] = h16(Math.min(RGB[q + 2], 6e4)); dl[k + 3] = h16(1);
+  }
+  deckLight.tex.needsUpdate = true;
   renderHUD(); renderCalc();
 }
 function classOf(c) { for (const k of NBR5101) if (c.Em >= k.Em && c.U0 >= k.U0) return k.c; return null; }
@@ -339,13 +376,13 @@ function renderScenePane() {
     slider({ id: 'fog', label: 'Névoa / maresia', min: 0, max: 1, step: 0.05, value: S.fog, f: v => fmt(v * 100, 0) + '%', on: v => { S.fog = v; applyMode(); persist(); } }),
     el('h3', {}, 'Elementos'),
     toggle({ id: 'tLamps', label: 'Iluminação pública existente', checked: S.lamps, on: v => { S.lamps = v; applyMode(); persist(); } }),
-    toggle({ id: 'tShadow', label: 'Sombras dos projetores (mais pesado)', checked: S.shadows, on: v => { S.shadows = v; rig.shadows = v; rig.applyShadows(); persist(); } }),
+    toggle({ id: 'tShadow', label: 'Sombras dos projetores (mais pesado)', checked: S.shadows, on: v => { S.shadows = v; rig.shadows = v; rig.applyShadows(); shadowsDirty(); persist(); } }),
     toggle({ id: 'tPeople', label: 'Pessoas em escala (1,75 m)', checked: S.people, on: v => { S.people = v; people.visible = v; persist(); } }),
     toggle({ id: 'tCity', label: 'Cidade e barcos', checked: S.city, on: v => { S.city = v; setCity(); persist(); } }),
-    toggle({ id: 'tDims', label: 'Cotas e medidas', checked: S.dims, on: v => { S.dims = v; dims.visible = v; persist(); } }),
+    toggle({ id: 'tDims', label: 'Cotas e medidas', checked: S.dims, on: v => { S.dims = v; dims.visible = v; labelRenderer.render(scene, camera); persist(); } }),
     el('h3', {}, 'Qualidade de renderização'),
-    seg([['leve', 'Leve'], ['media', 'Média'], ['alta', 'Alta']], S.quality, v => { S.quality = v; resize(); rebuildAll(); persist(); }, 'qSeg'),
-    el('p', { class: 'note' }, 'Leve reduz resolução e o número de luzes dinâmicas da prévia. O cálculo de lux sempre usa todas as luminárias.'),
+    seg([['leve', 'Leve'], ['media', 'Média'], ['alta', 'Alta']], S.quality, v => { S.quality = v; perf.scale = 1; applyQuality(); rebuildAll(); persist(); }, 'qSeg'),
+    el('p', { class: 'note', id: 'perfNote' }, 'Leve reduz resolução, reflexo, antisserrilhado e luzes dinâmicas (até 12; Média 28; Alta 44). A resolução também se ajusta sozinha para manter a fluidez. O cálculo de lux sempre usa todas as luminárias.'),
     el('h3', {}, 'Dimensões adotadas no modelo'),
     el('div', { class: 'tblwrap' }, el('table', { class: 'qt', html: `
       <tr><th>Elemento</th><th>Valor</th></tr>
@@ -714,7 +751,8 @@ renderer.domElement.addEventListener('pointerup', e => {
   }
 });
 renderer.domElement.addEventListener('pointermove', e => {
-  const now = performance.now(); if (now - hoverT < 90) return; hoverT = now;
+  if (e.pointerType !== 'mouse' || e.buttons) { $('#coord').hidden = true; return; }
+  const now = performance.now(); if (now - hoverT < 120) return; hoverT = now;
   const h = hitAt(e), c = $('#coord');
   if (!h) { c.hidden = true; return; }
   c.hidden = false;
@@ -728,13 +766,19 @@ window.addEventListener('keydown', e => { if (e.key === 'Escape' && placing) { p
 // =====================================================================
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight; if (!w || !h) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr);
+  const dpr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr) * perf.scale); perf.dpr = dpr;
   renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
   composer.setPixelRatio(dpr); composer.setSize(w, h);
   labelRenderer.setSize(w, h);
   camera.aspect = w / h; camera.updateProjectionMatrix();
   const q = QUALITY[S.quality].refl;
-  water.getRenderTarget().setSize(Math.round(w * dpr * q), Math.round(h * dpr * q));
+  water.getRenderTarget().setSize(Math.max(64, Math.round(w * dpr * q)), Math.max(64, Math.round(h * dpr * q)));
+  bloom.setSize(Math.round(w * dpr * QUALITY[S.quality].bloom), Math.round(h * dpr * QUALITY[S.quality].bloom));
+}
+function applyQuality() {
+  const q = QUALITY[S.quality];
+  for (const rt of [composerRT, water.getRenderTarget()]) if (rt.samples !== q.msaa) { rt.samples = q.msaa; rt.dispose(); }
+  resize();
 }
 new ResizeObserver(resize).observe(stage);
 
@@ -754,7 +798,28 @@ function feedWaterLights() {
   WU.lN.value = n;
 }
 const clock = new THREE.Clock();
-function frame() {
+// interação: qualquer gesto ou ajuste devolve a taxa máxima de quadros
+const poke = () => { perf.lastInput = performance.now(); };
+controls.addEventListener('change', poke);
+['pointerdown', 'wheel', 'input', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, poke, { passive: true }));
+const hasEffects = () => S.groups.some(g => g.on && g.effect !== 'estatico');
+function frame(now) {
+  requestAnimationFrame(frame);
+document.addEventListener('visibilitychange', () => { perf.last = performance.now(); clock.getDelta(); });
+  perf.idle = !tween && now - perf.lastInput > 2500;
+  // parado: 30 qps com efeitos DMX, 20 qps sem (a água continua mexendo)
+  const minGap = perf.idle ? (hasEffects() ? 32 : 48) : 0;
+  if (now - perf.last < minGap) return;
+  const dt = now - perf.last; perf.last = now; perf.frame++;
+  // resolução dinâmica: mira ~50 qps enquanto o usuário interage
+  if (!perf.idle && dt < 250) { perf.acc += dt; perf.n++; }
+  if (now > perf.checkAt && perf.n > 20) {
+    const avg = perf.acc / perf.n, old = perf.scale;
+    if (avg > 24) perf.scale = Math.max(0.55, perf.scale - 0.1);
+    else if (avg < 15) perf.scale = Math.min(1, perf.scale + 0.05);
+    if (perf.scale !== old) resize();
+    perf.acc = 0; perf.n = 0; perf.checkAt = now + 1500;
+  }
   const t = clock.getElapsedTime();
   if (tween) {
     const k = Math.min(1, (performance.now() - tween.s) / tween.d), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
@@ -767,15 +832,16 @@ function frame() {
   rig.animate(S.groups, t);
   feedWaterLights();
   composer.render();
-  labelRenderer.render(scene, camera);
-  requestAnimationFrame(frame);
+  if (dims.visible) labelRenderer.render(scene, camera);
 }
 
 // inicialização
 people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
-applyMode(); resize(); rebuildAll();
+env.group.traverse(o => { if (['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro', 'Postes', 'Guarda_corpo_cais', 'Postes_ponte'].includes(o.name)) reflHide.push(o); });
+reflHide.push(people, sky.stars, heat.mesh, dims);
+applyMode(); applyQuality(); rebuildAll();
 renderScenePane(); renderLightPane(); renderFilePane();
 try { const tab = localStorage.getItem('ponte-pensil-tab'); if (tab) document.querySelector(`.tabs button[data-tab="${tab}"]`)?.click(); } catch (e) { /* ignora */ }
 if (window.innerWidth <= 820) { $('#panel').classList.add('min'); $('#sheetToggle').textContent = '▴'; }
-window.__ponte = { applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
+window.__ponte = { perf, applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
 requestAnimationFrame(frame);

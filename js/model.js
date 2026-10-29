@@ -126,6 +126,37 @@ export function makeTextures() {
   return { wood, concrete, pavers, asphalt, grass, mesh, facade, windowsEm };
 }
 
+/** Mapa de luz do piso: iluminância RGB (lux) calculada para todas as luminárias. */
+export const deckLight = (() => {
+  const nx = 200, nz = 5;
+  const tex = new THREE.DataTexture(new Uint16Array(nx * nz * 4), nx, nz, THREE.RGBAFormat, THREE.HalfFloatType);
+  tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.needsUpdate = true;
+  return { tex, nx, nz, uniform: { value: tex } };
+})();
+function deckLitWood(mat) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.deckE = deckLight.uniform;
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vDeckW; varying float vDeckUp;')
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        vec4 dW = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          dW = instanceMatrix*dW;
+          vDeckUp = normalize(mat3(modelMatrix)*mat3(instanceMatrix)*objectNormal).y;
+        #else
+          vDeckUp = normalize(mat3(modelMatrix)*objectNormal).y;
+        #endif
+        vDeckW = (modelMatrix*dW).xyz;`);
+    const chunk = THREE.ShaderChunk.lights_fragment_begin;
+    const a = chunk.indexOf('#if ( NUM_SPOT_LIGHTS > 0 )'), b = chunk.indexOf('#if ( NUM_DIR_LIGHTS > 0 )');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform sampler2D deckE; varying vec3 vDeckW; varying float vDeckUp;')
+      .replace('#include <lights_fragment_begin>', chunk.slice(0, a) + chunk.slice(b))
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+        { vec2 duv = vec2((vDeckW.x + ${(P.L / 2).toFixed(1)}) / ${P.L.toFixed(1)}, (vDeckW.z + 0.65) / 1.3 * 0.8 + 0.1);
+          reflectedLight.directDiffuse += texture2D(deckE, duv).rgb * smoothstep(0.2, 0.9, vDeckUp) * BRDF_Lambert(material.diffuseColor); }`);
+  };
+  mat.customProgramCacheKey = () => 'piso-com-mapa-de-luz';
+}
+
 export function makeMaterials(T) {
   const M = {
     wood: new THREE.MeshStandardMaterial({ color: 0xffffff, map: T.wood, roughness: 0.82, metalness: 0 }),
@@ -151,7 +182,22 @@ export function makeMaterials(T) {
     pole: new THREE.MeshStandardMaterial({ color: 0x55595d, roughness: 0.6, metalness: 0.6 }),
   };
   M.lampHead.userData.baseNits = 30000;
+  // Otimização: o entorno (prédios, casas, árvores, grama, vias, barcos) não calcula
+  // as luzes spot dos LEDs — só lua/sol/céu. Corta a maior parte do custo por pixel.
+  deckLitWood(M.wood);
+  for (const k of ['facade', 'house', 'roof', 'trunk', 'leaf', 'palm', 'grass', 'asphalt', 'hullWhite', 'hullBlue', 'pole']) noSpotLights(M[k]);
   return M;
+}
+
+/** Remove o laço de luzes spot do shader deste material (mantém sol, lua e céu). */
+export function noSpotLights(mat) {
+  mat.onBeforeCompile = (sh) => {
+    const chunk = THREE.ShaderChunk.lights_fragment_begin;
+    const a = chunk.indexOf('#if ( NUM_SPOT_LIGHTS > 0 )'), b = chunk.indexOf('#if ( NUM_DIR_LIGHTS > 0 )');
+    if (a < 0 || b < 0) return;
+    sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_begin>', chunk.slice(0, a) + chunk.slice(b));
+  };
+  mat.customProgramCacheKey = () => 'sem-spots';
 }
 
 // ---------- utilitários de geometria ----------
