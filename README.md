@@ -18,6 +18,15 @@ Modelo 3D paramétrico da ponte pênsil que liga **Torres (RS)** a **Passo de To
 - Efeitos DMX (respiração, onda, corrida, arco-íris), períodos (noite, hora azul, dia), cotas sobre o modelo.
 - Exporta GLB (Blender/Rhino/3ds Max, com luzes spot), CSV de quantitativo, projeto em JSON e imagem PNG.
 
+## Entorno real e iluminação (v5)
+
+- **Entorno do OpenStreetMap** (© colaboradores do OpenStreetMap, ODbL): margens e quadras reais, 898 edificações com telhado cerâmico ou laje, vias de asfalto/lajota com calçadas, 104 letreiros de comércios reais, postes com poças de luz, guarda-corpo azul da margem, trapiche, barcos e a ponte rodoviária na posição real. Dados em `data/` (carregados em tempo de execução; se falharem, volta o entorno genérico).
+- **Árvores procedurais** (jerivás com folhas recortadas, árvores de copa larga e arbustos) em ruas, margens, praças e quintais.
+- **Letreiro #EUPASSODETORRES** ao lado do pé da escada de SC.
+- **Projetor LED 10 W foco fechado**: corpo aletado, lente em domo e suporte em U; perfil angular real (núcleo + halo + espalhamento) no cálculo e no shader; **facho visível no ar** com espalhamento físico (controle "Facho visível no ar" na aba Cena).
+- **Editor de luminárias**: crie grupos avulsos, clique para fixar na superfície (chão, fachada, ponte, árvore), clique para mirar, selecione clicando na luminária, mova com setas, ajuste giro/inclinação, duplique e exclua. "Editar individualmente" separa qualquer grupo em luminárias avulsas.
+- Navegação mais precisa (sensibilidade ajustável) e câmera impedida de descer abaixo do chão.
+
 ## Rodar localmente
 Qualquer servidor estático serve (o three.js está em `vendor/`, sem build):
 ```

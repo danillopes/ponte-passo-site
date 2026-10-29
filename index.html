@@ -54,6 +54,16 @@ nav.links a:hover { border-color: var(--led); color: var(--led); }
 .chip small { display: block; font: 600 9.5px/1.2 var(--f-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
 .chip.ok { border-color: color-mix(in srgb, var(--ok) 60%, var(--line)); }
 .chip.no { border-color: color-mix(in srgb, var(--bad) 60%, var(--line)); }
+.fxlist { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.fxrow { display: flex; gap: 4px; align-items: stretch; }
+.fxrow .fxname { flex: 1; text-align: left; background: rgba(255,255,255,0.04); border: 1px solid var(--line, #333); color: inherit; border-radius: 6px; padding: 6px 8px; font: 600 12px var(--f-mono, monospace); cursor: pointer; }
+.fxrow .fxname small { font-weight: 400; color: var(--muted); }
+.fxrow.on .fxname { border-color: var(--led); background: rgba(255,176,32,0.12); }
+.fxrow .btn { padding: 4px 9px; }
+.fxedit { border-left: 2px solid var(--led); padding: 6px 0 6px 10px; margin: 2px 0 6px; }
+.xyz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 6px; }
+.xyz .mini { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 2px; }
+.xyz input { width: 100%; min-width: 0; }
 .toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: var(--led); color: #1b1203; padding: 8px 14px; border-radius: 6px; font-weight: 600; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,0.4); max-width: calc(100% - 32px); text-align: center; }
 .coord { position: absolute; right: 12px; top: 12px; pointer-events: none; }
 .legend { position: absolute; right: 12px; bottom: 12px; width: 230px; pointer-events: none; }

@@ -16,6 +16,24 @@ export const isOn = (g) => !!g.on && LAYERS[roleOf(g)] !== false;
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
+// ---------------------------------------------------------------------
+//  Perfil angular real nos shaders: luzes com distance > 19999 usam
+//  núcleo gaussiano (meia-abertura h = penumbraCos) + anel + espalhamento
+//  até coneCos; anel e espalhamento vão codificados na própria distância.
+//  (A atenuação continua 1/d²; o corte em ~35 km não interfere.)
+// ---------------------------------------------------------------------
+{
+  const A = 'float spotAttenuation = getSpotAttenuation( spotLight.coneCos, spotLight.penumbraCos, angleCos );';
+  const src = THREE.ShaderChunk.lights_pars_begin;
+  if (src.includes(A)) THREE.ShaderChunk.lights_pars_begin = src.replace(A, `float spotAttenuation;
+		if ( spotLight.distance > 19999.0 ) {
+			float th = acos( clamp( angleCos, -1.0, 1.0 ) ), thS = acos( spotLight.coneCos ), hh = max( acos( spotLight.penumbraCos ), 1e-3 );
+			float kk = spotLight.distance - 20000.0, sp = floor( kk / 1000.0 ) / 1000.0, rg = ( kk - floor( kk / 1000.0 ) * 1000.0 ) / 1000.0;
+			float q = th / hh, w = ( th - 2.6 * hh ) / ( 0.7 * hh );
+			spotAttenuation = th < thS ? exp( -0.693147 * q * q ) + rg * exp( -w * w ) + sp * pow( max( 0.0, 1.0 - th / thS ), 1.5 ) : 0.0;
+		} else spotAttenuation = getSpotAttenuation( spotLight.coneCos, spotLight.penumbraCos, angleCos );`);
+}
+
 export const TYPES = {
   strip:      { nome: 'Fita LED neon flex 24 V', curto: 'Neon flex', linear: true, w: 0.012, r: 0.009, p: [0.25, 30, 0.25], unit: 'W/m', beams: [120, 160], eff: 90, ip: 'IP67', desc: 'Perfil de silicone difuso 12 × 20 mm, preso com clipes inox. Lido como linha contínua de luz.' },
   linearRail: { nome: 'Perfil linear para corrimão', curto: 'Linear de corrimão', linear: true, w: 0.010, r: 0.011, p: [0.1, 20, 0.05], unit: 'W/m', beams: [20, 30, 40, 60, 90], eff: 85, ip: 'IP66', desc: 'Perfil de alumínio sob o corrimão, lente assimétrica voltada ao piso. Não ofusca quem caminha.' },
@@ -24,6 +42,7 @@ export const TYPES = {
   inground:   { nome: 'Embutido de solo (uplight)', curto: 'Embutido de solo', linear: false, a: 0.008, p: [3, 36, 1], unit: 'W', beams: [6, 10, 15, 24, 36, 60], eff: 95, ip: 'IP67', housing: 'inground', desc: 'Corpo inox 316, vidro 12 mm transitável. Rasante nas pernas das torres.' },
   dot:        { nome: 'Ponto de luz pixel Ø 50 mm', curto: 'Pixel', linear: false, a: 0.00196, p: [0.5, 6, 0.25], unit: 'W', beams: [30, 60, 120], eff: 80, ip: 'IP67', housing: 'dot', desc: 'Domo difuso endereçável (DMX/SPI) com abraçadeira para cabo ou pendural.' },
   spot:       { nome: 'Spot de facho super estreito', curto: 'Super spot', linear: false, a: 0.0079, p: [10, 80, 5], unit: 'W', beams: [3, 4, 6, 8, 10, 15], eff: 90, ip: 'IP66', housing: 'spot', desc: 'Óptica de longo alcance (até ~150 m) para topos de torre e pontos distantes.' },
+  proj10:     { nome: 'Projetor LED 10 W foco fechado (fachada externa)', curto: 'Projetor 10 W foco fechado', linear: false, a: 0.0016, p: [5, 20, 1], unit: 'W', beams: [5, 8, 12], eff: 80, ip: 'IP66', housing: 'proj10', prof: { ring: 0.05, spill: 0.012, S: 50 }, desc: 'Corpo cilíndrico aletado de alumínio (≈ 13 × 7 cm), anel frontal, lente colimadora em domo e suporte em U. Facho fechado: núcleo estreito, halo fraco em anel e um leve espalhamento em V junto à lente, como na foto do produto. Curva estimada (~80 lm/W, sem .ies do fabricante).' },
   bollard:    { nome: 'Balizador de rodapé / degrau', curto: 'Balizador', linear: false, a: 0.0012, p: [1, 8, 0.5], unit: 'W', beams: [40, 60, 90, 120], eff: 80, ip: 'IP65', housing: 'bollard', desc: 'Pequeno embutido com facho rasante voltado ao piso. Marca o caminho sem ofuscar.' },
 };
 
@@ -69,14 +88,14 @@ export const MOUNTS = {
     lines: (g) => hangerXs(g.params.every).flatMap(x => [-1, 1].map(s => ({ pts: [V(x, deckY(x) + 0.05, s * (P.cableZ + 0.014)), V(x, cableY(x) - 0.1, s * (P.cableZ + 0.014))], dir: V(0, -0.35, -s).normalize(), s0: x + H() }))),
   },
   towerUp: {
-    nome: 'Torres — de baixo para cima', icon: '▲', types: ['flood', 'inground', 'spot', 'washer'],
+    nome: 'Torres — de baixo para cima', icon: '▲', types: ['flood', 'inground', 'spot', 'washer', 'proj10'],
     params: [{ k: 'aimH', l: 'Altura do alvo na torre', min: 3, max: 14, step: 0.5, def: 12, u: 'm' }, { k: 'faces', l: 'Faces iluminadas', type: 'select', opts: [['rio', 'Só a face do rio'], ['ambas', 'Rio e terra']], def: 'ambas' }, { k: 'dist', l: 'Afastamento da base', min: 0.2, max: 6, step: 0.1, def: 1.2, u: 'm' }],
     points: (g) => {
       const out = [];
       for (const s of [-1, 1]) for (const z of [-P.legZ, P.legZ]) for (const f of g.params.faces === 'ambas' ? [-s, s] : [-s]) {
         const p = V(s * H() + f * (P.legHXb + g.params.dist), P.ground + 0.06, z);
         const t = V(s * H() + f * P.legHXt * 0.7, P.ground + g.params.aimH, z);
-        out.push({ p, d: t.sub(p).normalize(), s: out.length });
+        out.push({ p, d: t.sub(p).normalize(), s: out.length, n: V(0, 1, 0) });
       }
       return out;
     },
@@ -105,14 +124,14 @@ export const MOUNTS = {
     }),
   },
   quay: {
-    nome: 'Cais — projetores mirando a ponte', icon: '◢', types: ['flood', 'spot'],
+    nome: 'Cais — projetores mirando a ponte', icon: '◢', types: ['flood', 'spot', 'proj10'],
     params: [{ k: 'qty', l: 'Projetores por margem', min: 1, max: 6, step: 1, def: 2 }, { k: 'aimDist', l: 'Alvo: distância a partir da torre', min: 0, max: 50, step: 1, def: 22, u: 'm' }, { k: 'aimY', l: 'Alvo: cota', min: 0, max: 15, step: 0.5, def: 8, u: 'm' }],
     points: (g) => {
       const out = [];
       for (const s of [-1, 1]) for (let i = 0; i < g.params.qty; i++) {
         const z = (i % 2 ? 1 : -1) * (7 + Math.floor(i / 2) * 6);
         const p = V(s * (P.quayX + 1.2), P.ground + 0.35, z), t = V(s * (H() - g.params.aimDist), g.params.aimY, 0);
-        out.push({ p, d: t.sub(p).normalize(), s: out.length });
+        out.push({ p, d: t.sub(p).normalize(), s: out.length, n: V(0, 1, 0) });
       }
       return out;
     },
@@ -148,9 +167,9 @@ export const MOUNTS = {
     },
   },
   custom: {
-    nome: 'Avulsas (posição livre)', icon: '✛', types: ['flood', 'washer', 'inground', 'dot', 'spot', 'bollard'],
+    nome: 'Avulsas (posição livre)', icon: '✛', types: ['proj10', 'flood', 'spot', 'washer', 'inground', 'dot', 'bollard'],
     params: [],
-    points: (g) => (g.fixtures || []).map((f, i) => ({ p: V(...f.p), d: V(...f.d).normalize(), s: i })),
+    points: (g) => (g.fixtures || []).map((f, i) => ({ p: V(...f.p), d: V(...f.d).normalize(), s: i, n: f.n ? V(...f.n).normalize() : null, i })),
   },
 };
 
@@ -180,11 +199,27 @@ export function efficacy(g) {
   return Math.round(T.eff * (0.32 + 0.68 * Math.pow(Y, 0.6)));
 }
 export const solidAngle = (beamDeg) => 2 * Math.PI * (1 - Math.cos(Math.min(beamDeg, 179) * Math.PI / 360));
+/** Perfil do projetor de foco fechado: I(θ)/I0 = núcleo gaussiano (FWHM = facho) + anel + espalhamento. */
+export function profOf(g) {
+  const T = TYPES[g.type]; if (!T || !T.prof || g.photo) return null;
+  return { h: beamOf(g) * Math.PI / 360, ring: T.prof.ring, spill: T.prof.spill, S: T.prof.S * Math.PI / 180 };
+}
+export function profF(pr, th) {
+  if (th >= pr.S) return 0;
+  const q = th / pr.h, w = (th - 2.6 * pr.h) / (0.7 * pr.h);
+  return Math.exp(-0.693147 * q * q) + pr.ring * Math.exp(-w * w) + pr.spill * Math.pow(Math.max(0, 1 - th / pr.S), 1.5);
+}
+/** Ângulo sólido equivalente Ω = ∫ f(θ) dΩ (fluxo = I0 · Ω). */
+export function profOmega(pr) {
+  let s = 0; const n = 600, d = pr.S / n;
+  for (let i = 0; i < n; i++) { const th = (i + 0.5) * d; s += profF(pr, th) * Math.sin(th) * d; }
+  return 2 * Math.PI * s;
+}
 /** Fitas/perfis: facho transversal × 120° longitudinal → Ω ≈ 4·asin(sin hT · sin hL). */
 export const LONG_HALF = 60 * Math.PI / 180;
 export const beamOf = (g) => g.photo ? Math.round(g.photo.beam) : g.beam;
 export const photoLen = (g) => Math.max(0.1, g.photo?.lenM || 1);
-export const solidAngleOf = (g) => g.photo ? solidAngle(g.photo.beam) : TYPES[g.type].linear ? 4 * Math.asin(Math.sin(Math.min(g.beam, 179) * Math.PI / 360) * Math.sin(LONG_HALF)) : solidAngle(g.beam);
+export const solidAngleOf = (g) => g.photo ? solidAngle(g.photo.beam) : profOf(g) ? profOmega(profOf(g)) : TYPES[g.type].linear ? 4 * Math.asin(Math.sin(Math.min(g.beam, 179) * Math.PI / 360) * Math.sin(LONG_HALF)) : solidAngle(g.beam);
 export const emitArea = (g) => { const T = TYPES[g.type]; return T.linear ? T.w : T.a; };
 /** Fluxo por luminária (lm) ou por metro (lm/m). */
 export const fluxUnit = (g) => g.photo ? g.photo.flux / (TYPES[g.type].linear ? photoLen(g) : 1) * g.dim / 100 : g.power * efficacy(g) * g.dim / 100;
@@ -196,21 +231,37 @@ export const powerForNits = (g, nits) => nits * solidAngleOf(g) * emitArea(g) / 
 // ---------------------------------------------------------------------
 //  Material emissor (fitas e lentes) com efeitos dinâmicos
 // ---------------------------------------------------------------------
-export function emitterMaterial() {
+const PROF_GLSL = `float profF(vec4 pr, float th){ if (th >= pr.w) return 0.0; float q = th/pr.x, w = (th - 2.6*pr.x)/(0.7*pr.x);
+  return exp(-0.693147*q*q) + pr.y*exp(-w*w) + pr.z*pow(max(0.0, 1.0 - th/pr.w), 1.5); }`;
+export function emitterMaterial(pr = null) {
   return new THREE.ShaderMaterial({
     fog: true,
-    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uColor: { value: new THREE.Color() }, uTime: { value: 0 }, uMode: { value: 0 }, uSpeed: { value: 1 }, uLambda: { value: 8 } }]),
+    // lente de projetor: soma luz ao vidro/refletor por trás (de dia aparece o corpo, à noite o brilho)
+    ...(pr ? { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false } : {}),
+    defines: pr ? { USE_PROF: '' } : {},
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uColor: { value: new THREE.Color() }, uTime: { value: 0 }, uMode: { value: 0 }, uSpeed: { value: 1 }, uLambda: { value: 8 }, uProf: { value: pr ? new THREE.Vector4(pr.h, pr.ring, pr.spill, pr.S) : new THREE.Vector4() } }]),
     vertexShader: `#include <fog_pars_vertex>
-      attribute float aS; varying float vS;
-      void main(){ vS = aS; vec4 p = vec4(position,1.0);
+      attribute float aS; varying float vS; varying float vF; uniform vec4 uProf;
+      ${PROF_GLSL}
+      void main(){ vS = aS; vF = 1.0; vec4 p = vec4(position,1.0);
       #ifdef USE_INSTANCING
         p = instanceMatrix*p;
+      #endif
+      #ifdef USE_PROF
+        // lente vista de lado brilha pouco: luminância aparente segue a curva I(θ)
+        { vec4 wp = modelMatrix*p; vec3 ax = vec3(0.0, 0.0, 1.0);
+        #ifdef USE_INSTANCING
+          ax = mat3(instanceMatrix)*ax;
+        #endif
+          ax = normalize(mat3(modelMatrix)*ax);
+          float c = dot(ax, normalize(cameraPosition - wp.xyz));
+          vF = profF(uProf, acos(clamp(c, -1.0, 1.0))) + 0.004; }
       #endif
         vec4 mvPosition = modelViewMatrix*p; gl_Position = projectionMatrix*mvPosition;
       #include <fog_vertex>
       }`,
     fragmentShader: `#include <fog_pars_fragment>
-      uniform vec3 uColor; uniform float uTime, uMode, uSpeed, uLambda; varying float vS;
+      uniform vec3 uColor; uniform float uTime, uMode, uSpeed, uLambda; varying float vS; varying float vF;
       vec3 hsv(float h){ vec3 k = clamp(abs(mod(h*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0,0.0,1.0); return k; }
       void main(){
         float f = 1.0; vec3 col = uColor; float ph = vS/uLambda - uTime*uSpeed;
@@ -218,7 +269,7 @@ export function emitterMaterial() {
         else if (uMode > 1.5 && uMode < 2.5) f = 0.5 + 0.5*sin(6.28318*ph);
         else if (uMode > 2.5 && uMode < 3.5) { float q = fract(ph); f = q < 0.18 ? 1.0 : 0.03; }
         else if (uMode > 3.5) { vec3 h = hsv(fract(ph*0.5)); float Y = dot(h, vec3(0.2126,0.7152,0.0722)); float L = dot(uColor, vec3(0.2126,0.7152,0.0722)); col = min(h/max(Y,0.05)*L, vec3(60000.0)); }
-        gl_FragColor = vec4(col*f, 1.0);
+        gl_FragColor = vec4(col*f*vF, 1.0);
         #include <fog_fragment>
       }`,
   });
@@ -247,8 +298,65 @@ const HOUSINGS = {
   dot:      () => ({ body: new THREE.CylinderGeometry(0.03, 0.03, 0.02, 12).rotateX(Math.PI / 2).translate(0, 0, -0.012), lens: new THREE.SphereGeometry(0.025, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2).rotateX(Math.PI / 2) }),
   spot:     () => ({ body: new THREE.CylinderGeometry(0.06, 0.07, 0.2, 16).rotateX(Math.PI / 2).translate(0, 0, -0.105), lens: new THREE.CylinderGeometry(0.05, 0.05, 0.004, 16).rotateX(Math.PI / 2) }),
   bollard:  () => ({ body: new THREE.BoxGeometry(0.09, 0.05, 0.03).translate(0, 0, -0.016), lens: new THREE.BoxGeometry(0.06, 0.02, 0.003) }),
+  // Projetor 10 W foco fechado: corpo Ø 70 × 130 mm aletado, anel frontal frisado, lente em domo, suporte em U
+  proj10: () => {
+    const parts = [];
+    const cyl = (r0, r1, len, z, seg = 24) => new THREE.CylinderGeometry(r1, r0, len, seg).rotateX(Math.PI / 2).translate(0, 0, z);
+    parts.push(cyl(0.028, 0.03, 0.095, -0.025));                 // corpo
+    for (let k = 0; k < 14; k++) { const a = k / 14 * Math.PI * 2, f = new THREE.BoxGeometry(0.0025, 0.007, 0.075).translate(0, 0.0335, -0.03); f.rotateZ(a); parts.push(f); } // aletas
+    parts.push(cyl(0.035, 0.035, 0.016, 0.03)); parts.push(cyl(0.0355, 0.0355, 0.003, 0.025)); parts.push(cyl(0.0355, 0.0355, 0.003, 0.035)); // anel frisado
+    parts.push(cyl(0.02, 0.026, 0.012, -0.078)); parts.push(cyl(0.005, 0.005, 0.025, -0.095, 8)); // tampa traseira e prensa-cabo
+    parts.push(cyl(0.029, 0.029, 0.004, 0.036, 24)); // fundo espelhado atrás da lente (visível de dia)
+    const body = mergeGeometries(parts.map(p => p.index ? p.toNonIndexed() : p));
+    const lens = new THREE.SphereGeometry(0.027, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2).rotateX(Math.PI / 2).scale(1, 1, 0.45).translate(0, 0, 0.038);
+    // suporte em U: base no plano local XZ (Y = normal da superfície), braços até o eixo de giro (y = 0,075)
+    const br = [new THREE.BoxGeometry(0.06, 0.004, 0.035).translate(0, 0.002, 0),
+      new THREE.BoxGeometry(0.004, 0.075, 0.02).translate(0.042, 0.0375, 0), new THREE.BoxGeometry(0.004, 0.075, 0.02).translate(-0.042, 0.0375, 0),
+      new THREE.BoxGeometry(0.088, 0.004, 0.02).translate(0, 0.004, 0),
+      new THREE.CylinderGeometry(0.007, 0.007, 0.092, 10).rotateZ(Math.PI / 2).translate(0, 0.075, 0)];
+    const bracket = mergeGeometries(br.map(p => p.index ? p.toNonIndexed() : p));
+    return { body, lens, bracket, pivot: 0.075 };
+  },
 };
 const housingMat = new THREE.MeshStandardMaterial({ color: 0x2b2f33, roughness: 0.5, metalness: 0.6 });
+const housingGrey = new THREE.MeshStandardMaterial({ color: 0x8d9296, roughness: 0.42, metalness: 0.7 }); // alumínio cinza (projetor 10 W)
+
+// ---------------------------------------------------------------------
+//  Facho visível no ar (espalhamento simples na névoa/maresia)
+//  Radiância L = σ ∫ I0·f(θ)·p(φ) / r² ds, integrada no cone (cd/m² = nits)
+// ---------------------------------------------------------------------
+const BEAM_GEO = (alpha) => new THREE.ConeGeometry(Math.tan(alpha), 1, 28, 1, false).rotateX(-Math.PI / 2).translate(0, 0, 0.5);
+function beamMaterial(pr, col, hazeU) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uCol: { value: col }, uProf: { value: new THREE.Vector4(pr.h, pr.ring, pr.spill, pr.S) }, uHaze: hazeU, uG: { value: 0.6 }, uCosA: { value: Math.cos(pr.mesh) }, uK: { value: 1 } },
+    vertexShader: `varying vec3 vW, vA, vD; varying float vL;
+      void main(){ mat4 mi = modelMatrix * instanceMatrix; vec4 w = mi * vec4(position, 1.0); vW = w.xyz;
+        vA = (mi * vec4(0.0, 0.0, 0.0, 1.0)).xyz; vec3 z = mat3(mi) * vec3(0.0, 0.0, 1.0); vL = length(z); vD = z / vL;
+        gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `uniform vec3 uCol; uniform vec4 uProf; uniform float uHaze, uG, uCosA, uK; varying vec3 vW, vA, vD; varying float vL;
+      ${PROF_GLSL}
+      void main(){
+        vec3 O = cameraPosition, R = vW - O; float t1 = length(R); R /= t1;
+        vec3 CO = O - vA; float dv = dot(R, vD), dc = dot(CO, vD), c2 = uCosA * uCosA;
+        float a = dv * dv - c2, b = 2.0 * (dv * dc - c2 * dot(R, CO)), c = dc * dc - c2 * dot(CO, CO);
+        float t0 = 0.0, disc = b * b - 4.0 * a * c;
+        if (!(dc > 0.0 && c > 0.0) && disc > 0.0 && abs(a) > 1e-6) { float sq = sqrt(disc), r1 = min((-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)); if (r1 > 0.0 && r1 < t1) t0 = r1; }
+        float seg = t1 - t0; if (seg <= 1e-4) discard;
+        const int N = 22; float dt = seg / float(N);
+        float j = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        float g2 = uG * uG, sum = 0.0;
+        for (int i = 0; i < N; i++) {
+          vec3 v = O + R * (t0 + (float(i) + j) * dt) - vA; float ax = dot(v, vD);
+          if (ax <= 0.0 || ax > vL) continue;
+          float r2 = max(dot(v, v), 0.0025), rl = sqrt(r2);
+          float ph = (1.0 - g2) / (12.566371 * pow(1.0 + g2 - 2.0 * uG * dot(v / rl, -R), 1.5));
+          sum += profF(uProf, acos(clamp(ax / rl, -1.0, 1.0))) * ph / r2;
+        }
+        gl_FragColor = vec4(uCol * (uK * uHaze * sum * dt), 1.0);
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.BackSide, fog: false, toneMapped: false,
+  });
+}
 
 // ---------------------------------------------------------------------
 //  Rig: monta luzes + emissores de cada grupo
@@ -257,10 +365,11 @@ export class LightRig {
   constructor(scene) {
     this.root = new THREE.Group(); this.root.name = 'Iluminacao_LED'; scene.add(this.root);
     this.rt = new Map(); this.shadows = false; this.budgetScale = 1;
+    this.haze = { value: 0 }; this.occluders = []; this.ray = new THREE.Raycaster();
   }
   clear(id) {
     const r = this.rt.get(id); if (!r) return;
-    r.obj.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material !== housingMat) o.material.dispose(); if (o.isLight && o.shadow && o.shadow.map) o.shadow.map.dispose(); });
+    r.obj.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material !== housingMat && o.material !== housingGrey) o.material.dispose(); if (o.isLight && o.shadow && o.shadow.map) o.shadow.map.dispose(); });
     this.root.remove(r.obj); this.rt.delete(id);
   }
   rebuildAll(groups) { for (const id of [...this.rt.keys()]) this.clear(id); groups.forEach(g => this.build(g)); this.applyShadows(); }
@@ -276,10 +385,11 @@ export class LightRig {
     const cNorm = col.clone().multiplyScalar(1 / Y);
     const flux = fluxUnit(g), I0 = candela(g), half = beamOf(g) * Math.PI / 360;
     const ph = g.photo || null, phScale = ph ? (g.dim / 100) * (T.linear ? 0.5 / photoLen(g) : 1) : 0, phRot = g.photoRot ? 90 : 0;
+    const pr = profOf(g);
     const nits = nitsOf(g);
     const emitCol = cNorm.clone().multiplyScalar(Math.min(nits, 60000));
     ['r', 'g', 'b'].forEach(k => { emitCol[k] = Math.min(emitCol[k], 60000); });
-    const emat = emitterMaterial(); emat.uniforms.uColor.value.copy(emitCol);
+    const emat = emitterMaterial(pr); emat.uniforms.uColor.value.copy(emitCol);
     emat.uniforms.uMode.value = EFFECT_ID[g.effect] || 0; emat.uniforms.uSpeed.value = g.speed; emat.uniforms.uLambda.value = g.lambda;
     rt.emitMats.push(emat);
     const visible = isOn(g);
@@ -318,15 +428,39 @@ export class LightRig {
       rt.count = pts.length;
       if (pts.length) {
         const hs = (HOUSINGS[T.housing] || HOUSINGS.flood)();
-        const body = new THREE.InstancedMesh(hs.body, housingMat, pts.length);
+        const body = new THREE.InstancedMesh(hs.body, T.housing === 'proj10' ? housingGrey : housingMat, pts.length);
         const lens = new THREE.InstancedMesh(hs.lens, emat, pts.length);
         const aS = new Float32Array(pts.length);
         const m = new THREE.Matrix4(), q = new THREE.Quaternion(), one = V(1, 1, 1), Z = V(0, 0, 1);
         pts.forEach((f, i) => { q.setFromUnitVectors(Z, f.d); m.compose(f.p, q, one); body.setMatrixAt(i, m); lens.setMatrixAt(i, m); aS[i] = f.s ?? i; });
         lens.geometry.setAttribute('aS', new THREE.InstancedBufferAttribute(aS, 1));
         body.castShadow = false; body.name = 'Corpo_luminaria'; lens.name = 'Lente';
+        body.userData.gid = lens.userData.gid = g.id; body.userData.pts = lens.userData.pts = pts;
         obj.add(body, lens);
-        pts.forEach(f => rt.elems.push({ p: f.p, d: f.d, I: I0, half, c: cNorm, ph, phScale, phRot, r: refAxis(f.d, null) }));
+        // suporte em U preso à superfície (normal n), girando no eixo perpendicular à mira
+        if (hs.bracket && pts.some(f => f.n)) {
+          const bp = pts.filter(f => f.n), br = new THREE.InstancedMesh(hs.bracket, housingGrey, bp.length), bx = V(), bz = V(), mb = new THREE.Matrix4();
+          bp.forEach((f, i) => {
+            bx.crossVectors(f.n, f.d); if (bx.lengthSq() < 1e-6) bx.set(1, 0, 0).cross(f.n); if (bx.lengthSq() < 1e-6) bx.set(0, 0, 1);
+            bx.normalize(); bz.crossVectors(bx, f.n).normalize();
+            mb.makeBasis(bx, f.n, bz); mb.setPosition(f.p.clone().addScaledVector(f.n, -hs.pivot)); br.setMatrixAt(i, mb);
+          });
+          br.name = 'Corpo_luminaria'; br.userData.gid = g.id; obj.add(br);
+        }
+        pts.forEach(f => rt.elems.push({ p: f.p, d: f.d, I: I0, half, c: cNorm, ph, phScale, phRot, r: refAxis(f.d, null), prof: pr }));
+        // facho visível no ar: projetores e spots de facho ≤ 30°
+        if (this.haze.value > 0 && (pr || (!ph && beamOf(g) <= 30))) {
+          const vp = pr ? { ...pr, mesh: Math.min(pr.S, pr.h * 3.6) } : { h: half * 0.9, ring: 0, spill: 0, S: half * 1.35, mesh: half * 1.35 };
+          const beams = new THREE.InstancedMesh(BEAM_GEO(vp.mesh), beamMaterial(vp, cNorm.clone().multiplyScalar(I0), this.haze), Math.min(pts.length, 80));
+          const mb = new THREE.Matrix4();
+          pts.slice(0, 80).forEach((f, i) => {
+            let L = 150;
+            if (this.occluders.length) { this.ray.set(f.p.clone().addScaledVector(f.d, 0.12), f.d); this.ray.far = 150; const h = this.ray.intersectObjects(this.occluders, true).find(x => x.object.visible); if (h) L = h.distance + 0.12; }
+            q.setFromUnitVectors(Z, f.d); mb.compose(f.p.clone().addScaledVector(f.d, 0.04), q, V(L, L, L)); beams.setMatrixAt(i, mb);
+          });
+          beams.name = 'Facho_volumetrico'; beams.layers.set(1); beams.frustumCulled = false; beams.renderOrder = 4;
+          obj.add(beams); rt.beams = beams;
+        }
         // agrega luminárias em nL luzes
         const n = Math.min(nL, pts.length), chunk = pts.length / n;
         for (let i = 0; i < n; i++) {
@@ -340,8 +474,15 @@ export class LightRig {
     return rt;
   }
   addLight(rt, obj, p, d, fluxTotal, g, colS, cNorm, s, beamOverride) {
-    const beam = beamOverride || beamOf(g), I = fluxTotal / solidAngle(beam);
+    const beam = beamOverride || beamOf(g), pr = beamOverride ? null : profOf(g);
+    const I = pr ? fluxTotal / profOmega(pr) : fluxTotal / solidAngle(beam);
     const L = new THREE.SpotLight(0xffffff, I, 0, Math.min(beam * Math.PI / 360 * 1.15, Math.PI / 2 * 0.98), 0.45, 2);
+    if (pr) {
+      // perfil real no shader (ver lights_pars_begin acima)
+      L.angle = Math.min(pr.S, 1.5); L.penumbra = Math.max(0, Math.min(1, 1 - pr.h / L.angle));
+      L.distance = 20000 + Math.round(pr.spill * 1000) * 1000 + Math.round(pr.ring * 1000);
+      L.userData.core = pr.h * 1.6; L.shadow.focus = Math.min(1, pr.h * 4 / L.angle);
+    }
     L.color.copy(cNorm);
     L.position.copy(p); L.target.position.copy(p).add(d.clone().multiplyScalar(5));
     obj.add(L, L.target);
@@ -350,7 +491,7 @@ export class LightRig {
   applyShadows() {
     let used = 0;
     for (const [, rt] of this.rt) for (const l of rt.lights) {
-      const want = this.shadows && rt.obj.visible && used < 8 && l.light.angle < 0.6;
+      const want = this.shadows && rt.obj.visible && used < 8 && (l.light.userData.core ?? l.light.angle) < 0.6;
       if (want) used++;
       l.light.castShadow = want;
       if (want) { l.light.shadow.mapSize.set(1024, 1024); l.light.shadow.bias = -0.0004; l.light.shadow.camera.near = 0.2; l.light.shadow.camera.far = 160; }
@@ -361,6 +502,7 @@ export class LightRig {
       const rt = this.rt.get(g.id); if (!rt || !isOn(g)) continue;
       rt.emitMats.forEach(m => { m.uniforms.uTime.value = t; });
       if (g.effect === 'estatico') continue;
+      if (rt.beams) rt.beams.material.uniforms.uK.value = g.effect === 'arcoiris' ? 1 : effectFactor(g, 0, t);
       for (const l of rt.lights) {
         l.light.intensity = l.I * effectFactor(g, l.s, t);
         if (g.effect === 'arcoiris') { const c = rainbowColor(g, l.s, t); const Y = Math.max(luminanceY(c), 0.03); l.light.color.copy(c).multiplyScalar(1 / Y); }
@@ -406,6 +548,7 @@ function intensity(el, v, d) {
     const C = Math.atan2(v.x * _b.x + v.y * _b.y + v.z * _b.z, v.x * el.r.x + v.y * el.r.y + v.z * el.r.z) * 180 / Math.PI + el.phRot;
     return sampleI(el.ph, C, gamma) * el.phScale;
   }
+  if (el.prof) return el.I * profF(el.prof, Math.acos(Math.max(-1, Math.min(1, (v.x * el.d.x + v.y * el.d.y + v.z * el.d.z) / d))));
   if (el.t) {
     const vt = v.x * el.t.x + v.y * el.t.y + v.z * el.t.z;
     const thL = Math.asin(Math.min(1, Math.abs(vt) / d));

@@ -46,7 +46,7 @@ export function rng(seed = 7) {
 }
 
 // ---------- texturas procedurais ----------
-function canvasTex(w, h, draw, { srgb = true } = {}) {
+export function canvasTex(w, h, draw, { srgb = true } = {}) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const g = c.getContext('2d'); draw(g, w, h);
   const t = new THREE.CanvasTexture(c);
@@ -54,7 +54,7 @@ function canvasTex(w, h, draw, { srgb = true } = {}) {
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
-function noise(g, w, h, n, col, a0, a1, r, rnd) {
+export function noise(g, w, h, n, col, a0, a1, r, rnd) {
   for (let i = 0; i < n; i++) {
     g.fillStyle = `rgba(${col},${a0 + rnd() * (a1 - a0)})`;
     const s = 0.5 + rnd() * r; g.fillRect(rnd() * w, rnd() * h, s, s);
@@ -393,7 +393,7 @@ function ribbon(bottom, top, cell) {
 }
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _d = V(), _mid = V(), _s = V();
 /** Caixas instanciadas ao longo de segmentos [a,b]. */
-function boxSegs(segs, sy, sz, mat, name) {
+export function boxSegs(segs, sy, sz, mat, name) {
   const im = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, segs.length);
   segs.forEach(([a, b], i) => {
     _d.subVectors(b, a); const len = _d.length(); _d.normalize();
@@ -403,7 +403,7 @@ function boxSegs(segs, sy, sz, mat, name) {
   im.name = name; im.castShadow = im.receiveShadow = true; return im;
 }
 /** Cilindros instanciados ao longo de segmentos [a,b]. */
-function cylSegs(segs, r, mat, name, radial = 8) {
+export function cylSegs(segs, r, mat, name, radial = 8) {
   const im = new THREE.InstancedMesh(new THREE.CylinderGeometry(r, r, 1, radial), mat, segs.length);
   segs.forEach(([a, b], i) => {
     _d.subVectors(b, a); const len = _d.length(); _d.normalize();
@@ -423,7 +423,7 @@ function boxUV(geo, tile = 2) {
   }
   uv.needsUpdate = true; return geo;
 }
-function box(sx, sy, sz, x, y, z, mat, name) {
+export function box(sx, sy, sz, x, y, z, mat, name) {
   const m = new THREE.Mesh(boxUV(new THREE.BoxGeometry(sx, sy, sz).translate(x, y, z)).translate(-x, -y, -z), mat);
   m.position.set(x, y, z); m.name = name || ''; m.castShadow = m.receiveShadow = true; return m;
 }
@@ -715,7 +715,7 @@ export function buildEnvironment(M, T) {
   return { group: g, pick, lampPos };
 }
 
-function makeBoat(len, twoDeck, M) {
+export function makeBoat(len, twoDeck, M) {
   const b = new THREE.Group(), w = len * 0.28;
   const shp = new THREE.Shape([
     new THREE.Vector2(-len / 2, -w / 2), new THREE.Vector2(len / 2 - w * 0.9, -w / 2), new THREE.Vector2(len / 2, 0),

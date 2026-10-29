@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -10,7 +11,8 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { P, H, deckY, cableY, stairSteps, makeTextures, makeMaterials, deckLight, buildBridge, buildEnvironment, buildPeople, buildSky, RiverShader } from './model.js';
 import { parsePhotometry, packPhoto } from './photometry.js';
-import { TYPES, MOUNTS, EFFECTS, LightRig, computeGrid, computeVertical, CRITERIA_REF, LAYERS, isOn, roleOf, beamOf, falseColor, FALSE_STOPS, groupColor, efficacy, fluxUnit, candela, nitsOf, powerForNits, cctToSRGB } from './lighting.js';
+import { buildRealEnvironment } from './entorno.js';
+import { TYPES, MOUNTS, EFFECTS, LightRig, computeGrid, computeVertical, CRITERIA_REF, LAYERS, isOn, roleOf, beamOf, falseColor, FALSE_STOPS, groupColor, efficacy, fluxUnit, candela, nitsOf, powerForNits, cctToSRGB, profOf } from './lighting.js';
 
 const $ = (s) => document.querySelector(s);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -36,8 +38,15 @@ function baseGroups() {
     G({ name: 'Projetores no cais', mount: 'quay', type: 'flood', beam: 10, power: 30, nLights: 4 }),
     G({ name: 'Balizadores no rodapé', mount: 'postFoot', type: 'bollard', beam: 60, power: 2, nLights: 6 }),
     G({ name: 'Balizadores das escadas', mount: 'stairs', type: 'bollard', beam: 60, power: 3, nLights: 4 }),
-    G({ name: 'Luminárias avulsas', mount: 'custom', type: 'flood', beam: 25, power: 30, nLights: 6 }),
+    G({ key: 'avulsas', name: 'Luminárias avulsas', mount: 'custom', type: 'flood', beam: 25, power: 30, nLights: 6 }),
+    projGroup(),
   ];
+}
+/** Exemplo: 4 projetores 10 W de foco fechado ao pé das torres, apontando para cima (facho visível no ar). */
+function projGroup() {
+  const y = P.ground + 0.075, fx = [];
+  for (const s of [-1, 1]) for (const z of [-2.0, 2.0]) fx.push({ p: [s * (H() + 1.55), y, z], d: V(-s * 0.035, 1, -Math.sign(z) * 0.02).normalize().toArray().map(v => +v.toFixed(4)), n: [0, 1, 0] });
+  return G({ key: 'proj10', role: 'cenica', name: 'Projetores 10 W foco fechado', mount: 'custom', type: 'proj10', beam: 8, power: 10, nLights: 4, colorMode: 'cct', cct: 4000, fixtures: fx });
 }
 const PRESETS = {
   cenica: { nome: 'Proposta — funcional 3000 K + cênica sóbria', patch: {
@@ -47,6 +56,7 @@ const PRESETS = {
     towerTop: { on: true, colorMode: 'cct', cct: 3000, power: 6, beam: 45 },
     underDeck: { on: true, colorMode: 'rgb', rgb: '#7fb2e6', power: 3, beam: 30, params: { spacing: 8 } },
     stairs: { on: true, colorMode: 'cct', cct: 3000, power: 2 },
+    proj10: { on: true },
   } },
   atual: { nome: 'Situação atual (fotos 2024–25): cabos azuis', patch: {
     cable: { on: true, colorMode: 'rgb', rgb: '#1f2fff', power: 1.0 },
@@ -70,21 +80,27 @@ const PRESETS = {
 };
 function presetGroups(key) {
   const gs = baseGroups(), patch = PRESETS[key].patch;
-  for (const g of gs) { const p = patch[g.mount]; if (p) { const { params, ...rest } = p; Object.assign(g, rest); if (params) Object.assign(g.params, params); } }
+  for (const g of gs) { const p = patch[g.key || g.mount]; if (p) { const { params, ...rest } = p; Object.assign(g, rest); if (params) Object.assign(g.params, params); } }
   return gs;
 }
 
 const IS_MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(screen.width, screen.height) < 820;
 const S = {
-  mode: 'noite', ev: 0, bloom: 0.18, refl: 0.5, ripple: 0.03, fog: 0.25, lamps: true, shadows: false,
+  mouse: 0.5, mode: 'noite', ev: 0, bloom: 0.18, refl: 0.5, ripple: 0.03, fog: 0.25, lamps: true, shadows: false,
   fm: 0.8, criteria: CRITERIA_REF.map(c => ({ ...c })), layers: { funcional: true, cenica: true }, waterAnim: false,
-  people: true, city: true, dims: false, heat: false, quality: IS_MOBILE ? 'leve' : 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
+  people: true, city: true, haze: 0.45, dims: false, heat: false, quality: IS_MOBILE ? 'leve' : 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
   groups: presetGroups('cenica'),
 };
 try {
   const saved = JSON.parse(localStorage.getItem('ponte-pensil-v4') || 'null');
-  if (saved && saved.groups) { Object.assign(S, saved, { groups: saved.groups.map(g => G({ ...g, id: undefined })) }); }
+  if (saved && saved.groups) { Object.assign(S, saved, { groups: migrate(saved.groups.map(g => G({ ...g, id: undefined }))) }); }
 } catch (e) { /* armazenamento indisponível */ }
+/** Projetos antigos: identifica o grupo avulso original e acrescenta o grupo de projetores 10 W. */
+function migrate(gs) {
+  gs.forEach(g => { if (!g.key && g.mount === 'custom' && g.name === 'Luminárias avulsas') g.key = 'avulsas'; });
+  if (!gs.some(g => g.key === 'proj10')) { const pg = projGroup(); pg.on = true; gs.push(pg); }
+  return gs;
+}
 const perf = { idle: false, frame: 0, last: performance.now(), lastInput: performance.now(), dpr: 1, scale: 1, acc: 0, n: 0, checkAt: performance.now() + 2000 };
 Object.assign(LAYERS, S.layers);
 const persist = debounce(() => { try { localStorage.setItem('ponte-pensil-v4', JSON.stringify(serialize())); } catch (e) { /* ignora */ } }, 400);
@@ -108,16 +124,25 @@ const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
 camera.position.set(-75, 32, 95);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 7, 0); controls.enableDamping = true; controls.dampingFactor = 0.08;
-controls.maxDistance = 900; controls.minDistance = 0.5; controls.maxPolarAngle = Math.PI * 0.62;
+controls.maxDistance = 900; controls.minDistance = 0.5; controls.maxPolarAngle = Math.PI * 0.56;
+controls.screenSpacePanning = true;
+// sensibilidade reduzida para posicionamento preciso (ajustável na aba Cena)
+function applySensitivity() { const k = S.mouse ?? 0.5; controls.rotateSpeed = 0.9 * k; controls.panSpeed = 1.0 * k; controls.zoomSpeed = 1.0 * k; controls.dampingFactor = 0.12; }
+// cota mínima da câmera: nunca abaixo do terreno/água nem dentro do muro do cais
+let groundAt = (x, z) => Math.abs(x) > P.quayX - 0.2 ? P.ground : 0;
 
 const TX = makeTextures(), M = makeMaterials(TX);
 const bridge = buildBridge(M); scene.add(bridge);
-const env = buildEnvironment(M, TX); scene.add(env.group);
+// entorno real (OpenStreetMap); se os dados não carregarem, volta ao entorno genérico
+let env;
+try { env = await buildRealEnvironment(M); }
+catch (e) { console.warn('Entorno OSM indisponível, usando o genérico:', e); env = buildEnvironment(M, TX); }
+scene.add(env.group);
 const people = buildPeople(M); scene.add(people);
 const sky = buildSky(); scene.add(sky.dome, sky.stars);
 scene.fog = new THREE.FogExp2(0x000000, 0.001);
 
-const water = new Reflector(new THREE.PlaneGeometry(2 * P.quayX, 1600), { textureWidth: 512, textureHeight: 512, clipBias: 0.003, shader: RiverShader, multisample: IS_MOBILE ? 0 : 4 });
+const water = new Reflector(env.real ? new THREE.PlaneGeometry(9000, 9000) : new THREE.PlaneGeometry(2 * P.quayX, 1600), { textureWidth: 512, textureHeight: 512, clipBias: 0.003, shader: RiverShader, multisample: IS_MOBILE ? 0 : 4 });
 water.rotation.x = -Math.PI / 2; water.name = 'Rio_Mampituba'; scene.add(water);
 // reflexo: some com o que não aparece na água; parado, atualiza só 1 quadro a cada 3
 const reflHide = [];
@@ -135,13 +160,17 @@ scene.add(sun, sun.target);
 
 // iluminação pública existente (sódio/LED 2200 K) nos postes mais próximos
 const streetLights = new THREE.Group(); streetLights.name = 'Iluminacao_publica_existente';
-env.lampPos.filter(p => Math.abs(p.z) < 30).forEach(p => {
+(env.real ? [...env.lampPos].sort((a, b) => a.length() - b.length()).filter(p => p.length() < 95).slice(0, 8) : env.lampPos.filter(p => Math.abs(p.z) < 30)).forEach(p => {
   const l = new THREE.SpotLight(cctToSRGB(2200), 2600, 0, 1.15, 0.6, 2);
   l.position.copy(p); l.target.position.copy(p).add(V(0, -10, 0)); streetLights.add(l, l.target);
 });
 scene.add(streetLights);
 
 const rig = new LightRig(scene);
+rig.occluders = [bridge, ...env.pick];
+camera.layers.enable(1); // fachos volumétricos (fora do reflexo da água e dos cliques)
+const hazeSigma = (v) => 0.045 * v * v; // coeficiente de espalhamento (1/m): 0 = ar limpo … 0,045 = névoa
+rig.haze.value = hazeSigma(S.haze ?? 0.45);
 
 // =====================================================================
 //  Níveis de detalhe por distância (distância ao ponto mais próximo da caixa do objeto)
@@ -221,7 +250,7 @@ composer.addPass(finalPass);
 const MODES = {
   noite: { nome: 'Noite', wbK: 3700, exp: 0.24, top: [0.012, 0.014, 0.026], hor: [0.14, 0.12, 0.12], bot: [0.025, 0.024, 0.025], glow: [0.24, 0.13, 0.07], stars: true, sunI: 0.5, sunC: '#a9b8ff', sunPos: [-60, 120, 140], hemiI: 0.9, hemiSky: '#5a6a9a', hemiGnd: '#2a2420', win: 3.5, lamp: 12000, body: [0.012, 0.016, 0.018], sunShadow: false },
   azul: { nome: 'Hora azul', wbK: 5000, exp: 0.085, top: [0.7, 1.3, 3.4], hor: [6.5, 4.6, 4.0], bot: [0.5, 0.5, 0.6], glow: [2.4, 1.0, 0.35], stars: false, sunI: 2.5, sunC: '#ffb27a', sunPos: [-200, 14, 60], hemiI: 7, hemiSky: '#7f95c8', hemiGnd: '#3a3530', win: 6, lamp: 15000, body: [0.25, 0.33, 0.38], sunShadow: false },
-  dia: { nome: 'Dia', wbK: 6200, exp: 0.00012, top: [1500, 3100, 7400], hor: [6000, 6700, 7600], bot: [1400, 1400, 1400], glow: [0, 0, 0], stars: false, sunI: 62000, sunC: '#fff2df', sunPos: [-80, 140, 60], hemiI: 15000, hemiSky: '#a8c8ff', hemiGnd: '#8a7f70', win: 0, lamp: 0, body: [160, 220, 240], sunShadow: true },
+  dia: { nome: 'Dia', wbK: 6200, exp: 0.00012, top: [1500, 3100, 7400], hor: [6000, 6700, 7600], bot: [1400, 1400, 1400], glow: [0, 0, 0], stars: false, sunI: 62000, sunC: '#fff2df', sunPos: [-80, 140, 60], hemiI: 15000, hemiSky: '#a8c8ff', hemiGnd: '#8a7f70', win: 0, lamp: 0, body: [430, 520, 470], sunShadow: true },
 };
 let exposure = 1;
 function applyMode() {
@@ -238,6 +267,8 @@ function applyMode() {
   hemi.intensity = m.hemiI; hemi.color.set(m.hemiSky); hemi.groundColor.set(m.hemiGnd);
   M.facade.emissiveIntensity = m.win; M.house.emissiveIntensity = m.win * 0.8;
   M.lampHead.color.setRGB(1, 0.62, 0.32).multiplyScalar(S.lamps ? m.lamp : 0);
+  if (env.applyMode) env.applyMode(m, S.lamps);
+  if (typeof gizmoTone === 'function') gizmoTone();
   scene.fog.color.setRGB(...m.hor); scene.fog.density = S.fog * 0.0045;
   WU.body.value.setRGB(...m.body); WU.reflectivity.value = S.refl; WU.distortion.value = S.ripple;
   streetLights.visible = S.lamps && S.mode !== 'dia';
@@ -390,7 +421,9 @@ const VIEWS = [
   ['Pedestre', [-47.5, deckY(-47.5) + 1.62, 0.15], [10, deckY(10) + 1.2, 0]],
   ['Praça RS', [-68, P.ground + 1.7, 10], [-30, 9, 0]],
   ['Sob a ponte', [6, 1.1, 9], [-2, 5.6, -3]],
-  ['Ponte de concreto', [12, 7.8, -272], [0, 7, 0]],
+  ['Ponte de concreto', [-205, 14, -300], [-300, 5, -392]],
+  ['Letreiro SC', [H() + 22, P.ground + 1.7, -9], [H() + 8.8, P.ground + 1.2, -3.4]],
+  ['Rua (SC)', [H() + 40, P.ground + 1.65, 30], [H(), 9, 0]],
   ['Drone', [60, 90, 75], [0, 4, 0]],
 ];
 let tween = null;
@@ -401,6 +434,8 @@ VIEWS.forEach(([n, p, t]) => $('#views').append(el('button', { type: 'button', o
 function renderScenePane() {
   const p = $('#pane-cena'); p.innerHTML = '';
   p.append(
+    el('h3', {}, 'Navegação'),
+    slider({ id: 'mouse', label: 'Sensibilidade do mouse', min: 0.15, max: 1.5, step: 0.05, value: S.mouse ?? 0.5, f: v => fmt(v * 100, 0) + '%', on: v => { S.mouse = v; applySensitivity(); persist(); } }),
     el('h3', {}, 'Período'),
     seg([['noite', 'Noite'], ['azul', 'Hora azul'], ['dia', 'Dia']], S.mode, v => { S.mode = v; applyMode(); persist(); }, 'modeSeg'),
     slider({ id: 'ev', label: 'Exposição da câmera', min: -4, max: 4, step: 0.1, value: S.ev, f: v => (v > 0 ? '+' : '') + fmt(v, 1) + ' EV', on: v => { S.ev = v; applyMode(); persist(); } }),
@@ -413,7 +448,9 @@ function renderScenePane() {
     toggle({ id: 'tLamps', label: 'Iluminação pública existente', checked: S.lamps, on: v => { S.lamps = v; applyMode(); persist(); } }),
     toggle({ id: 'tShadow', label: 'Sombras dos projetores (mais pesado)', checked: S.shadows, on: v => { S.shadows = v; rig.shadows = v && S.quality !== 'leve'; rig.applyShadows(); shadowsDirty(); if (v && S.quality === 'leve') toast('No modo Leve as sombras dos projetores ficam desligadas.'); persist(); } }),
     toggle({ id: 'tPeople', label: 'Pessoas em escala (1,75 m)', checked: S.people, on: v => { S.people = v; people.visible = v; perf.lodDirty = true; persist(); } }),
-    toggle({ id: 'tCity', label: 'Cidade e barcos', checked: S.city, on: v => { S.city = v; setCity(); persist(); } }),
+    slider({ id: 'haze', label: 'Facho visível no ar (umidade / maresia)', min: 0, max: 1, step: 0.05, value: S.haze ?? 0.45, f: v => v ? `σ ${fmt(hazeSigma(v) * 1000, 1)}‰/m` : 'ar limpo', on: v => { const was = rig.haze.value > 0; S.haze = v; rig.haze.value = hazeSigma(v); if (was !== v > 0) rebuildAll(); poke(); persist(); } }),
+    toggle({ id: 'tCity', label: env.real ? 'Edificações, letreiros, barcos e ponte de concreto (OSM)' : 'Cidade e barcos', checked: S.city, on: v => { S.city = v; setCity(); persist(); } }),
+    env.real ? el('p', { class: 'note', html: `Entorno real: ${env.stats.buildings} edificações, ${env.stats.roads} vias, ${env.stats.signs} letreiros de comércios e ${env.stats.trees} árvores, a partir do OpenStreetMap (© colaboradores do <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" style="color:var(--led)">OpenStreetMap</a>, ODbL). Alturas, cores e telhados são estimados.` }) : null,
     toggle({ id: 'tWater', label: 'Água animada com a cena parada (gasta mais bateria)', checked: S.waterAnim, on: v => { S.waterAnim = v; persist(); } }),
     toggle({ id: 'tDims', label: 'Cotas e medidas', checked: S.dims, on: v => { S.dims = v; dims.visible = v; labelRenderer.render(scene, camera); persist(); } }),
     el('h3', {}, 'Qualidade de renderização'),
@@ -436,6 +473,7 @@ function renderScenePane() {
   );
 }
 function setCity() {
+  if (env.real) { env.city.forEach(o => { o.visible = S.city; }); shadowsDirty(); return; }
   env.group.traverse(o => { if (['Edificios_Torres', 'Casas_PassoDeTorres', 'Telhados', 'Barcos', 'Ponte_concreto_referencia'].includes(o.name)) o.visible = S.city; });
 }
 
@@ -448,8 +486,14 @@ function renderLightPane() {
   p.append(
     el('h3', {}, 'Cenas prontas'),
     el('div', { class: 'pair' }, sel, el('button', { class: 'btn primary', type: 'button', onclick: () => {
-      S.preset = sel.value; const custom = S.groups.find(g => g.mount === 'custom');
-      S.groups = presetGroups(sel.value); if (custom && custom.fixtures.length) Object.assign(S.groups.find(g => g.mount === 'custom'), { ...custom, id: S.groups.find(g => g.mount === 'custom').id });
+      S.preset = sel.value; const old = S.groups.filter(g => g.mount === 'custom');
+      S.groups = presetGroups(sel.value);
+      // avulsas: mantém as posições do usuário (e os grupos que ele criou); a cena só decide se ligam
+      for (const c of old) {
+        const ng = c.key && S.groups.find(x => x.key === c.key);
+        if (ng) { if (c.fixtures.length) Object.assign(ng, { ...c, id: ng.id, on: ng.on }); }
+        else S.groups.push(c);
+      }
       rebuildAll(); renderLightPane(); persist(); toast('Cena aplicada: ' + PRESETS[sel.value].nome);
     } }, 'Aplicar')),
     el('h3', {}, 'Camadas'),
@@ -458,13 +502,22 @@ function renderLightPane() {
     el('h3', {}, 'Grupos de luminárias'),
     el('p', { class: 'note' }, 'Cada grupo é uma linha de luminárias montada num ponto da ponte. Ligue, troque o modelo e ajuste cor, potência, nits e facho, ou carregue a curva fotométrica real (.ies/.ldt) do fabricante.'),
   );
+  // novo grupo de luminárias avulsas
+  const tSel = el('select', { id: 'newType' }, MOUNTS.custom.types.map(t => el('option', { value: t }, TYPES[t].nome)));
+  p.append(el('h3', {}, 'Posicionar luminárias manualmente'),
+    el('p', { class: 'note' }, 'Crie um grupo, escolha o modelo e clique na ponte, no chão, numa fachada ou numa árvore para fixar cada luminária. O suporte fica preso à superfície; depois mire com outro clique, arraste com as setas ou ajuste giro/inclinação. Clique numa luminária avulsa para selecioná-la.'),
+    el('div', { class: 'pair' }, tSel, el('button', { class: 'btn primary', type: 'button', onclick: () => {
+      const T = TYPES[tSel.value];
+      const g = G({ name: 'Avulsas — ' + T.curto, mount: 'custom', type: tSel.value, beam: T.beams[Math.floor(T.beams.length / 2)], power: Math.min(T.p[1], Math.max(T.p[0], tSel.value === 'proj10' ? 10 : 20)), nLights: 6, on: true, colorMode: 'cct', cct: 3000 });
+      S.groups.push(g); openGroups.add(g.id); rebuildGroup(g); renderLightPane(); startPlacing(g);
+    } }, 'Novo grupo')));
   S.groups.forEach(g => p.append(groupCard(g)));
 }
 function swatchColor(g) { const c = groupColor(g); return '#' + c.getHexString(THREE.SRGBColorSpace); }
 function groupCard(g) {
   const T = TYPES[g.type], Mo = MOUNTS[g.mount];
   const open = openGroups.has(g.id);
-  const card = el('div', { class: 'group' + (open ? ' open' : '') });
+  const card = el('div', { class: 'group' + (open ? ' open' : ''), 'data-gid': g.id });
   const sw = el('span', { class: 'swatch', style: `background:${isOn(g) ? swatchColor(g) : 'transparent'}` });
   const sub = el('small', {}, '');
   const updSub = () => {
@@ -587,14 +640,8 @@ function groupCard(g) {
     else if (pp.type === 'select') body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('span', {}, pp.l)), seg(pp.opts, g.params[pp.k], change(v => { g.params[pp.k] = v; }))));
     else body.append(slider({ id: g.id + '-' + pp.k, label: pp.l, min: pp.min, max: pp.max, step: pp.step, value: g.params[pp.k], f: v => fmt(v, pp.step < 1 ? 2 : 0) + (pp.u ? ' ' + pp.u : ''), on: change(v => { g.params[pp.k] = v; }) }));
   }
-  if (g.mount === 'custom') {
-    body.append(el('p', { class: 'note', html: `<b>${g.fixtures.length}</b> luminária(s) avulsa(s). Clique em “Posicionar” e depois na ponte, torre, cais ou praça. O segundo clique define para onde ela aponta.` }),
-      el('div', { class: 'btns' },
-        el('button', { class: 'btn primary', type: 'button', onclick: () => startPlacing(g) }, 'Posicionar'),
-        el('button', { class: 'btn', type: 'button', onclick: () => { if (g.fixtures.length) { placing = { g, step: 'aim' }; toast('Clique no ponto que a última luminária deve iluminar. Esc cancela.', 0); } } }, 'Mirar a última'),
-        el('button', { class: 'btn', type: 'button', onclick: () => { g.fixtures.pop(); rebuildGroup(g); const n = groupCard(g); card.replaceWith(n); } }, 'Remover a última'),
-        el('button', { class: 'btn', type: 'button', onclick: () => { g.fixtures = []; rebuildGroup(g); const n = groupCard(g); card.replaceWith(n); } }, 'Limpar')));
-  }
+  if (g.mount === 'custom') body.append(fixtureEditor(g, card));
+  else if (!T.linear) body.append(el('div', { class: 'btns' }, el('button', { class: 'btn', type: 'button', title: 'Copia este grupo como luminárias avulsas, uma a uma, para mover e mirar livremente', onclick: () => editIndividually(g) }, 'Editar individualmente')));
 
   // efeitos
   body.append(el('h3', {}, 'Efeito (controle DMX)'));
@@ -611,6 +658,106 @@ function groupCard(g) {
   card.append(body);
   setTimeout(refresh, 30);
   return card;
+}
+
+// --- Editor de luminárias avulsas ---
+let sel = null; // { g, i }
+const dirOf = (pan, tilt) => { const p = pan * Math.PI / 180, t = tilt * Math.PI / 180; return [Math.cos(t) * Math.cos(p), Math.sin(t), Math.cos(t) * Math.sin(p)].map(v => +v.toFixed(4)); };
+const panTilt = (d) => [Math.atan2(d[2], d[0]) * 180 / Math.PI, Math.asin(Math.max(-1, Math.min(1, d[1]))) * 180 / Math.PI];
+function refreshCard(g) { const old = document.querySelector(`[data-gid="${g.id}"]`); if (old) old.replaceWith(groupCard(g)); }
+function fixtureEditor(g, card) {
+  const wrap = el('div', { class: 'fixed' });
+  const T = TYPES[g.type];
+  wrap.append(el('h3', {}, `Luminárias avulsas (${g.fixtures.length})`),
+    el('div', { class: 'btns' },
+      el('button', { class: 'btn primary', type: 'button', onclick: () => startPlacing(g) }, 'Posicionar (clique)'),
+      g.fixtures.length ? el('button', { class: 'btn', type: 'button', onclick: () => { g.fixtures = []; selectFixture(null); rebuildGroup(g); refreshCard(g); } }, 'Limpar tudo') : null,
+      !g.key ? el('button', { class: 'btn', type: 'button', onclick: () => { S.groups = S.groups.filter(x => x !== g); selectFixture(null); rig.clear(g.id); rebuildAll(); renderLightPane(); persist(); toast('Grupo excluído.'); } }, 'Excluir grupo') : null));
+  if (!g.fixtures.length) { wrap.append(el('p', { class: 'note' }, 'Nenhuma luminária ainda. Clique em “Posicionar” e depois na superfície onde ela será fixada.')); return wrap; }
+  const list = el('div', { class: 'fxlist' });
+  g.fixtures.forEach((f, i) => {
+    const on = sel && sel.g === g && sel.i === i, [pan, tilt] = panTilt(f.d);
+    const row = el('div', { class: 'fxrow' + (on ? ' on' : '') },
+      el('button', { class: 'fxname', type: 'button', onclick: () => selectFixture(on ? null : { g, i }) }, `#${i + 1}`, el('small', {}, ` X ${fmt(f.p[0], 1)} · Z ${fmt(f.p[2], 1)} · +${fmt(f.p[1], 2)} m · giro ${fmt(pan, 0)}° · incl. ${fmt(tilt, 0)}°`)),
+      el('button', { class: 'btn', type: 'button', title: 'Duplicar', onclick: () => { const c = JSON.parse(JSON.stringify(f)); c.p[2] += 0.5; g.fixtures.splice(i + 1, 0, c); rebuildGroup(g); selectFixture({ g, i: i + 1 }); } }, '⧉'),
+      el('button', { class: 'btn', type: 'button', title: 'Excluir', onclick: () => { g.fixtures.splice(i, 1); if (sel && sel.g === g) selectFixture(null); rebuildGroup(g); refreshCard(g); } }, '✕'));
+    list.append(row);
+    if (on) {
+      const upd = (fn) => { fn(); rebuildGroup(g); placeMarker(); };
+      const num = (k, lab) => { const x = el('input', { type: 'number', step: 0.05, value: (+f.p[k]).toFixed(2), 'aria-label': lab }); x.addEventListener('change', () => upd(() => { f.p[k] = +x.value; })); return el('label', { class: 'mini' }, lab, x); };
+      const panS = slider({ id: `${g.id}-pan-${i}`, label: 'Giro (azimute)', min: -180, max: 180, step: 1, value: Math.round(pan), f: v => v + '°', on: v => upd(() => { f.d = dirOf(v, panTilt(f.d)[1]); }) });
+      const tiltS = slider({ id: `${g.id}-tilt-${i}`, label: 'Inclinação (90° = para cima)', min: -90, max: 90, step: 1, value: Math.round(tilt), f: v => v + '°', on: v => upd(() => { f.d = dirOf(panTilt(f.d)[0], v); }) });
+      row.after(el('div', { class: 'fxedit' },
+        el('div', { class: 'xyz' }, num(0, 'X'), num(1, 'Cota'), num(2, 'Z')),
+        panS, tiltS,
+        el('div', { class: 'btns' },
+          el('button', { class: 'btn', type: 'button', onclick: () => attachGizmo(gizmo.object ? null : { g, i }) }, gizmo.object ? 'Soltar setas' : 'Mover com setas'),
+          el('button', { class: 'btn', type: 'button', onclick: () => { placing = { g, step: 'aim', idx: i, once: true }; toast('Clique no ponto que esta luminária deve iluminar. Esc cancela.', 0); } }, 'Mirar clicando'),
+          el('button', { class: 'btn', type: 'button', onclick: () => { placing = { g, step: 'place', idx: i, once: true }; toast('Clique na nova posição desta luminária. Esc cancela.', 0); } }, 'Reposicionar'),
+          el('button', { class: 'btn', type: 'button', onclick: () => upd(() => { f.d = (f.n || [0, 1, 0]).slice(); }) }, 'Mirar na normal'))));
+    }
+  });
+  wrap.append(list);
+  if (T.prof) wrap.append(el('p', { class: 'note' }, 'O facho no ar depende do controle “Facho visível no ar” (aba Cena). Em ar limpo ele quase não aparece; com umidade ou maresia fica como na foto do produto.'));
+  return wrap;
+}
+function editIndividually(g) {
+  const rt = rig.rt.get(g.id); const pts = MOUNTS[g.mount].points ? MOUNTS[g.mount].points(g) : [];
+  if (!pts.length) { toast('Este grupo não tem pontos para separar.'); return; }
+  const { id, _alloc, key, params, fixtures, ...rest } = g;
+  const ng = G({ ...JSON.parse(JSON.stringify(rest)), name: g.name + ' (avulsas)', mount: 'custom', on: true,
+    fixtures: pts.map(f => ({ p: f.p.toArray().map(v => +v.toFixed(3)), d: f.d.toArray().map(v => +v.toFixed(4)), n: (f.n || V(0, 1, 0)).toArray() })) });
+  if (!MOUNTS.custom.types.includes(ng.type)) ng.type = 'flood';
+  g.on = false; S.groups.push(ng); openGroups.add(ng.id); rebuildAll(); renderLightPane(); persist();
+  toast(`${pts.length} luminárias copiadas para “${ng.name}”. O grupo original foi desligado.`, 5000);
+  void rt;
+}
+// marcador da luminária selecionada + setas de translação
+const selMarker = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.012, 8, 32), new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false, transparent: true, fog: false }));
+selMarker.renderOrder = 20; selMarker.visible = false; scene.add(selMarker);
+const gizmo = new TransformControls(camera, renderer.domElement);
+gizmo.setMode('translate'); gizmo.setSize(0.8); scene.add(gizmo);
+const gizmoTarget = new THREE.Object3D(); scene.add(gizmoTarget);
+gizmo.addEventListener('dragging-changed', (e) => { controls.enabled = !e.value; poke(); });
+gizmo.addEventListener('objectChange', () => {
+  if (!sel) return; const f = sel.g.fixtures[sel.i]; if (!f) return;
+  const p = gizmoTarget.position; if (p.y < -1) p.y = -1;
+  f.p = p.toArray().map(v => +v.toFixed(3)); rebuildGroup(sel.g); placeMarker(); poke();
+});
+gizmo.addEventListener('mouseUp', () => { if (sel) refreshCard(sel.g); });
+function gizmoTone() { // cores das setas compensadas pela exposição da câmera
+  const k = Math.min(400, 0.9 / exposure);
+  gizmo.traverse(o => { if (o.material && o.material.color) { if (!o.material.userData.base) o.material.userData.base = o.material.color.clone(); o.material.color.copy(o.material.userData.base).multiplyScalar(k); } });
+  selMarker.material.color.setRGB(1, 0.69, 0.13).multiplyScalar(k);
+}
+function placeMarker() {
+  const f = sel && sel.g.fixtures[sel.i];
+  selMarker.visible = !!f; if (!f) return;
+  selMarker.position.fromArray(f.p); selMarker.lookAt(V(...f.p).add(V(...f.d)));
+  if (gizmo.object) gizmoTarget.position.fromArray(f.p);
+  poke();
+}
+function attachGizmo(s) {
+  if (s) { selectFixture(s, false); gizmoTarget.position.fromArray(s.g.fixtures[s.i].p); gizmo.attach(gizmoTarget); gizmoTone(); }
+  else gizmo.detach();
+  if (sel) refreshCard(sel.g); poke();
+}
+function selectFixture(s, refresh = true) {
+  const prev = sel && sel.g; sel = s;
+  if (!s) gizmo.detach(); else if (gizmo.object) gizmoTarget.position.fromArray(s.g.fixtures[s.i].p);
+  placeMarker();
+  if (refresh) { if (prev && prev !== (s && s.g)) refreshCard(prev); if (s) { openGroups.add(s.g.id); refreshCard(s.g); document.querySelector(`[data-gid="${s.g.id}"] .fxrow.on`)?.scrollIntoView({ block: 'nearest' }); } }
+}
+/** Luminária avulsa mais próxima do clique (em pixels). */
+function fixtureAt(ev, px = 16) {
+  const r = renderer.domElement.getBoundingClientRect(), v = V(); let best = null;
+  for (const g of S.groups) { if (g.mount !== 'custom' || !isOn(g)) continue;
+    g.fixtures.forEach((f, i) => {
+      v.fromArray(f.p).project(camera); if (v.z > 1) return;
+      const d = Math.hypot((v.x + 1) / 2 * r.width - (ev.clientX - r.left), (1 - v.y) / 2 * r.height - (ev.clientY - r.top));
+      if (d < px && (!best || d < best.d)) best = { g, i, d };
+    }); }
+  return best;
 }
 
 // --- Cálculo ---
@@ -700,12 +847,13 @@ function renderFilePane() {
     el('h3', {}, 'Documentação'),
     el('p', { class: 'note', html: '<a href="guia.html" style="color:var(--led)">Memorial técnico de modelagem</a>: geometria, coordenadas, catenária, pendurais, tabuleiro, guarda-corpo, Geometry Nodes/Grasshopper, materiais e câmera.<br><a href="blender/ponte_pensil_blender.py" download style="color:var(--led)">ponte_pensil_blender.py</a>: gera a ponte paramétrica dentro do Blender (Scripting › Run Script).' }),
     el('h3', {}, 'Restaurar'),
-    el('button', { class: 'btn', type: 'button', onclick: () => { S.groups = presetGroups('cenica'); S.preset = 'cenica'; rebuildAll(); renderLightPane(); persist(); toast('Projeto restaurado para a proposta cênica.'); } }, 'Voltar à proposta inicial'),
+    el('button', { class: 'btn', type: 'button', onclick: () => { selectFixture(null); S.groups = presetGroups('cenica'); S.preset = 'cenica'; rebuildAll(); renderLightPane(); persist(); toast('Projeto restaurado para a proposta cênica.'); } }, 'Voltar à proposta inicial'),
   );
 }
 function loadProject(d) {
   if (!d || !Array.isArray(d.groups)) throw new Error('formato');
-  const { groups, ...rest } = d; Object.assign(S, rest); S.groups = groups.map(g => G({ ...g, id: undefined }));
+  const { groups, ...rest } = d; Object.assign(S, rest); S.groups = migrate(groups.map(g => G({ ...g, id: undefined })));
+  rig.haze.value = hazeSigma(S.haze ?? 0.45); selectFixture(null);
   if (!Array.isArray(S.criteria)) S.criteria = CRITERIA_REF.map(c => ({ ...c })); Object.assign(LAYERS, S.layers || {});
   applyMode(); people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
   rebuildAll(); renderScenePane(); renderLightPane(); renderFilePane(); persist();
@@ -802,7 +950,7 @@ async function exportGLB(scope) {
 //  Clique: medir cotas e posicionar luminárias avulsas
 // =====================================================================
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
-const pickables = [bridge, ...env.pick, water];
+const pickables = [bridge, ...env.pick, ...(env.real ? env.group.children.filter(o => o.name === 'Vegetacao').flatMap(v => v.children.filter(c => /Troncos|Coqueiros/.test(c.name))) : []), water];
 function hitAt(ev) {
   const r = renderer.domElement.getBoundingClientRect();
   ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
@@ -810,27 +958,32 @@ function hitAt(ev) {
   const hits = ray.intersectObjects(pickables, true).filter(h => h.object.visible);
   return hits[0];
 }
-function startPlacing(g) { placing = { g, step: 'place' }; toast('Clique onde a luminária vai ficar (ponte, torre, cais ou praça). Esc cancela.', 0); }
+function startPlacing(g) { placing = { g, step: 'place' }; toast('Clique onde a luminária vai ficar (ponte, torre, chão, fachada ou árvore). Esc termina.', 0); }
 let downPos = null, hoverT = 0;
 renderer.domElement.addEventListener('pointerdown', e => { downPos = [e.clientX, e.clientY]; });
 renderer.domElement.addEventListener('pointerup', e => {
   if (!downPos || Math.hypot(e.clientX - downPos[0], e.clientY - downPos[1]) > 5) return;
+  if (gizmo.dragging) return;
+  if (!placing) { const fx = fixtureAt(e); if (fx) { selectFixture({ g: fx.g, i: fx.i }); toast(`Selecionada: ${fx.g.name} #${fx.i + 1}`); } return; }
   const h = hitAt(e); if (!h) return;
-  if (placing) {
-    const g = placing.g;
-    if (placing.step === 'place') {
-      const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : V(0, 1, 0);
-      if (h.object.isInstancedMesh && h.instanceId !== undefined) { const m = new THREE.Matrix4(); h.object.getMatrixAt(h.instanceId, m); n.copy(h.face.normal).transformDirection(m).transformDirection(h.object.matrixWorld); }
-      const p = h.point.clone().addScaledVector(n, 0.06);
-      g.fixtures.push({ p: p.toArray().map(v => +v.toFixed(3)), d: n.toArray().map(v => +v.toFixed(3)) });
-      g.on = true; placing.step = 'aim'; rebuildGroup(g);
-      toast('Agora clique no ponto que ela deve iluminar.', 0);
-    } else {
-      const f = g.fixtures[g.fixtures.length - 1];
-      const d = h.point.clone().sub(V(...f.p)).normalize(); f.d = d.toArray().map(v => +v.toFixed(3));
-      placing = null; rebuildGroup(g); toast('Luminária posicionada e mirada.');
-      setTimeout(renderLightPane, 80);
-    }
+  const g = placing.g;
+  if (placing.step === 'place') {
+    const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : V(0, 1, 0);
+    if (h.object.isInstancedMesh && h.instanceId !== undefined && h.face) { const m = new THREE.Matrix4(); h.object.getMatrixAt(h.instanceId, m); n.copy(h.face.normal).transformDirection(m).transformDirection(h.object.matrixWorld); }
+    if (n.dot(ray.ray.direction) > 0) n.negate(); // face voltada para quem clicou
+    const off = TYPES[g.type].housing === 'proj10' ? 0.075 : 0.06;
+    const p = h.point.clone().addScaledVector(n, off).toArray().map(v => +v.toFixed(3)), nn = n.toArray().map(v => +v.toFixed(4));
+    if (placing.idx !== undefined) { Object.assign(g.fixtures[placing.idx], { p, n: nn }); }
+    else { g.fixtures.push({ p, d: nn.slice(), n: nn }); placing.idx = g.fixtures.length - 1; }
+    g.on = true; rebuildGroup(g); selectFixture({ g, i: placing.idx });
+    if (placing.once) { placing = null; toast('Luminária reposicionada.'); }
+    else { placing.step = 'aim'; toast('Agora clique no ponto que ela deve iluminar (ou Esc para deixá-la apontada para fora da superfície).', 0); }
+  } else {
+    const i = placing.idx ?? g.fixtures.length - 1, f = g.fixtures[i];
+    const d = h.point.clone().sub(V(...f.p)).normalize(); f.d = d.toArray().map(v => +v.toFixed(4));
+    rebuildGroup(g); selectFixture({ g, i });
+    if (placing.once) { placing = null; toast('Luminária mirada.'); }
+    else { placing = { g, step: 'place' }; toast('Posicionada e mirada. Clique para fixar outra, ou Esc para terminar.', 0); }
   }
 });
 renderer.domElement.addEventListener('pointermove', e => {
@@ -842,7 +995,10 @@ renderer.domElement.addEventListener('pointermove', e => {
   c.innerHTML = `<small>Cursor${placing ? ' — ' + (placing.step === 'place' ? 'posicionar' : 'mirar') : ''}</small>X ${fmt(h.point.x, 2)} · Z ${fmt(h.point.z, 2)} · cota ${h.point.y >= 0 ? '+' : ''}${fmt(h.point.y, 2)} m`;
 });
 renderer.domElement.addEventListener('pointerleave', () => { $('#coord').hidden = true; });
-window.addEventListener('keydown', e => { if (e.key === 'Escape' && placing) { placing = null; toast('Posicionamento cancelado.'); } });
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { if (placing) { placing = null; toast('Posicionamento encerrado.'); } else if (sel) selectFixture(null); }
+  if ((e.key === 'Delete') && sel && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) { sel.g.fixtures.splice(sel.i, 1); const g = sel.g; selectFixture(null); rebuildGroup(g); refreshCard(g); }
+});
 
 // =====================================================================
 //  Laço principal
@@ -890,7 +1046,7 @@ function feedWaterLights() {
     L.target.getWorldPosition(_wt); const d = _wt.sub(_wp).normalize(); if (d.y > -0.05) return;
     WU.lPos.value[n].copy(_wp); WU.lDir.value[n].copy(d);
     WU.lCol.value[n].set(L.color.r, L.color.g, L.color.b).multiplyScalar(L.intensity);
-    WU.lCos.value[n] = Math.cos(L.angle); n++;
+    WU.lCos.value[n] = Math.cos(Math.min(L.angle, L.userData.core ?? L.angle)); n++;
   };
   for (const g of S.groups) { if (!isOn(g)) continue; const rt = rig.rt.get(g.id); if (rt) for (const l of rt.lights) push(l.light); }
   WU.lN.value = n;
@@ -927,7 +1083,9 @@ document.addEventListener('visibilitychange', () => { perf.last = performance.no
     if (k >= 1) tween = null;
   }
   controls.update();
-  if (camera.position.y < 0.4) camera.position.y = 0.4;
+  { const cp = camera.position, gmin = groundAt(cp.x, cp.z) + (Math.abs(cp.x) > P.quayX - 0.2 ? 0.5 : 0.35);
+    if (cp.y < gmin) cp.y = gmin;
+    const tg = controls.target, tmin = groundAt(tg.x, tg.z) + 0.05; if (tg.y < tmin) tg.y = tmin; }
   WU.time.value = t;
   rig.animate(S.groups, t);
   feedWaterLights();
@@ -938,8 +1096,9 @@ document.addEventListener('visibilitychange', () => { perf.last = performance.no
 
 // inicialização
 people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
-env.group.traverse(o => { if (['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro', 'Postes', 'Guarda_corpo_cais', 'Postes_ponte'].includes(o.name)) reflHide.push(o); });
-reflHide.push(people, sky.stars, heat.mesh, dims);
+if (env.real) { reflHide.push(...env.reflHide); groundAt = env.groundAt; }
+else env.group.traverse(o => { if (['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro', 'Postes', 'Guarda_corpo_cais', 'Postes_ponte'].includes(o.name)) reflHide.push(o); });
+reflHide.push(people, sky.stars, heat.mesh, dims, gizmo, selMarker);
 // LOD: miúdos somem de longe; pranchas viram uma faixa única além de 150 m
 {
   const deckProxy = (() => {
@@ -953,13 +1112,16 @@ reflHide.push(people, sky.stars, heat.mesh, dims);
   lodAdd(byName(bridge, 'Rodape'), 160);
   lodAdd(byName(bridge, 'Tela_guarda_corpo'), 380);
   lodAdd(people, 260, () => S.people);
-  for (const n of ['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro']) lodAdd(byName(env.group, n), 450);
-  lodAdd(byName(env.group, 'Guarda_corpo_cais'), 200);
-  lodAdd(byName(env.group, 'Postes'), 500);
+  if (env.real) env.lods.forEach(([o, d]) => lodAdd(o, d));
+  else {
+    for (const n of ['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro']) lodAdd(byName(env.group, n), 450);
+    lodAdd(byName(env.group, 'Guarda_corpo_cais'), 200);
+    lodAdd(byName(env.group, 'Postes'), 500);
+  }
 }
-applyMode(); applyQuality(); rebuildAll();
+applySensitivity(); applyMode(); applyQuality(); rebuildAll(); gizmoTone();
 renderScenePane(); renderLightPane(); renderFilePane();
 try { const tab = localStorage.getItem('ponte-pensil-tab'); if (tab) document.querySelector(`.tabs button[data-tab="${tab}"]`)?.click(); } catch (e) { /* ignora */ }
 if (window.innerWidth <= 820) { $('#panel').classList.add('min'); $('#sheetToggle').textContent = '▴'; }
-window.__ponte = { perf, applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
+window.__ponte = { env, sel: () => sel, selectFixture, attachGizmo, perf, applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
 requestAnimationFrame(frame);
