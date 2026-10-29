@@ -9,7 +9,8 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { P, H, deckY, cableY, stairSteps, makeTextures, makeMaterials, deckLight, buildBridge, buildEnvironment, buildPeople, buildSky, RiverShader } from './model.js';
-import { TYPES, MOUNTS, EFFECTS, LightRig, computeGrid, falseColor, FALSE_STOPS, NBR5101, groupColor, efficacy, fluxUnit, candela, nitsOf, powerForNits, cctToSRGB } from './lighting.js';
+import { parsePhotometry, packPhoto } from './photometry.js';
+import { TYPES, MOUNTS, EFFECTS, LightRig, computeGrid, computeVertical, CRITERIA_REF, LAYERS, isOn, roleOf, beamOf, falseColor, FALSE_STOPS, groupColor, efficacy, fluxUnit, candela, nitsOf, powerForNits, cctToSRGB } from './lighting.js';
 
 const $ = (s) => document.querySelector(s);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -39,16 +40,16 @@ function baseGroups() {
   ];
 }
 const PRESETS = {
-  cenica: { nome: 'Proposta cênica — azul Mampituba + branco quente', patch: {
-    cable: { on: true, colorMode: 'rgb', rgb: '#2b55ff', power: 0.75 },
+  cenica: { nome: 'Proposta — funcional 3000 K + cênica sóbria', patch: {
+    cable: { on: true, colorMode: 'cct', cct: 4000, power: 0.5, dim: 60 },
     handrail: { on: true, colorMode: 'cct', cct: 3000, power: 0.15, beam: 40 },
-    towerUp: { on: true, colorMode: 'cct', cct: 4000, power: 12, beam: 25 },
-    towerTop: { on: true, colorMode: 'cct', cct: 3000, power: 10, beam: 45 },
-    underDeck: { on: true, colorMode: 'rgb', rgb: '#00b7ff', power: 8, beam: 30, params: { spacing: 6 } },
+    towerUp: { on: true, colorMode: 'cct', cct: 3000, power: 8, beam: 25 },
+    towerTop: { on: true, colorMode: 'cct', cct: 3000, power: 6, beam: 45 },
+    underDeck: { on: true, colorMode: 'rgb', rgb: '#7fb2e6', power: 3, beam: 30, params: { spacing: 8 } },
     stairs: { on: true, colorMode: 'cct', cct: 3000, power: 2 },
   } },
   atual: { nome: 'Situação atual (fotos 2024–25): cabos azuis', patch: {
-    cable: { on: true, colorMode: 'rgb', rgb: '#1f2fff', power: 1.5 },
+    cable: { on: true, colorMode: 'rgb', rgb: '#1f2fff', power: 1.0 },
     handrail: { on: true, colorMode: 'cct', cct: 5000, power: 0.15, beam: 60 },
     towerUp: { on: true, colorMode: 'rgb', rgb: '#2436ff', power: 10, beam: 10 },
   } },
@@ -75,16 +76,18 @@ function presetGroups(key) {
 
 const IS_MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(screen.width, screen.height) < 820;
 const S = {
-  mode: 'noite', ev: 0, bloom: 0.35, refl: 1, ripple: 0.035, fog: 0.35, lamps: true, shadows: false,
+  mode: 'noite', ev: 0, bloom: 0.18, refl: 0.5, ripple: 0.03, fog: 0.25, lamps: true, shadows: false,
+  fm: 0.8, criteria: CRITERIA_REF.map(c => ({ ...c })), layers: { funcional: true, cenica: true }, waterAnim: false,
   people: true, city: true, dims: false, heat: false, quality: IS_MOBILE ? 'leve' : 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
   groups: presetGroups('cenica'),
 };
 try {
-  const saved = JSON.parse(localStorage.getItem('ponte-pensil-v3') || 'null');
+  const saved = JSON.parse(localStorage.getItem('ponte-pensil-v4') || 'null');
   if (saved && saved.groups) { Object.assign(S, saved, { groups: saved.groups.map(g => G({ ...g, id: undefined })) }); }
 } catch (e) { /* armazenamento indisponível */ }
 const perf = { idle: false, frame: 0, last: performance.now(), lastInput: performance.now(), dpr: 1, scale: 1, acc: 0, n: 0, checkAt: performance.now() + 2000 };
-const persist = debounce(() => { try { localStorage.setItem('ponte-pensil-v3', JSON.stringify(serialize())); } catch (e) { /* ignora */ } }, 400);
+Object.assign(LAYERS, S.layers);
+const persist = debounce(() => { try { localStorage.setItem('ponte-pensil-v4', JSON.stringify(serialize())); } catch (e) { /* ignora */ } }, 400);
 function serialize() { const { groups, ...rest } = S; return { ...rest, groups: groups.map(({ id, _alloc, ...g }) => g) }; }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
@@ -119,7 +122,7 @@ water.rotation.x = -Math.PI / 2; water.name = 'Rio_Mampituba'; scene.add(water);
 // reflexo: some com o que não aparece na água; parado, atualiza só 1 quadro a cada 3
 const reflHide = [];
 { const ob = water.onBeforeRender.bind(water); water.onBeforeRender = (...a) => {
-  if (perf.idle && perf.frame % 3 !== 0) return;
+  if ((perf.idle && perf.frame % 3 !== 0) || (S.quality === 'leve' && perf.frame % 2 !== 0)) return;
   const vis = reflHide.map(o => o.visible); reflHide.forEach(o => { o.visible = false; });
   ob(...a); reflHide.forEach((o, i) => { o.visible = vis[i]; });
 }; }
@@ -139,6 +142,27 @@ env.lampPos.filter(p => Math.abs(p.z) < 30).forEach(p => {
 scene.add(streetLights);
 
 const rig = new LightRig(scene);
+
+// =====================================================================
+//  Níveis de detalhe por distância (distância ao ponto mais próximo da caixa do objeto)
+// =====================================================================
+const LODS = [];
+function lodAdd(obj, dist, cond = () => true, proxy = null) {
+  if (!obj) return; obj.updateMatrixWorld(true);
+  LODS.push({ obj, dist, cond, proxy, box: new THREE.Box3().setFromObject(obj) });
+  if (proxy) { proxy.visible = false; scene.add(proxy); }
+}
+const byName = (root, n) => { let r = null; root.traverse(o => { if (!r && o.name === n) r = o; }); return r; };
+function updateLOD() {
+  perf.lodDirty = false;
+  const c = camera.position, k = S.quality === 'leve' ? 0.65 : S.quality === 'alta' ? 1.4 : 1;
+  for (const l of LODS) {
+    const near = l.box.distanceToPoint(c) < l.dist * k, ok = l.cond();
+    if (l.proxy) { l.obj.visible = ok && near; l.proxy.visible = ok && !near; } else l.obj.visible = ok && near;
+  }
+  // corpos das luminárias (recriados a cada ajuste): somem longe, as lentes ficam
+  rig.root.traverse(o => { if (o.name === 'Corpo_luminaria') { if (!o.userData.box) o.userData.box = new THREE.Box3().setFromObject(o); o.visible = o.userData.box.distanceToPoint(c) < 90 * k; } });
+}
 
 // mapa de falsa cor sobre o piso
 const heat = (() => {
@@ -165,22 +189,22 @@ const composerRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType
 const composer = new EffectComposer(renderer, composerRT);
 composer.addPass(new RenderPass(scene, camera));
 const exposurePass = new ShaderPass({
-  uniforms: { tDiffuse: { value: null }, exposure: { value: 1 }, cap: { value: 14 } },
+  uniforms: { tDiffuse: { value: null }, exposure: { value: 1 }, cap: { value: 9 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
   fragmentShader: `uniform sampler2D tDiffuse; uniform float exposure, cap; varying vec2 vUv;
     void main(){ vec3 c = texture2D(tDiffuse, vUv).rgb*exposure; float m = max(c.r, max(c.g, c.b)); if (m > cap) c *= cap/m; gl_FragColor = vec4(max(c, vec3(0.0)), 1.0); }`,
 });
 composer.addPass(exposurePass);
-const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.35, 0.3, 2.5);
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.18, 0.22, 3.5);
 composer.addPass(bloom);
 const finalPass = new ShaderPass({
-  uniforms: { tDiffuse: { value: null } },
+  uniforms: { tDiffuse: { value: null }, wb: { value: new THREE.Vector3(1, 1, 1) } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
-  fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D tDiffuse; uniform vec3 wb; varying vec2 vUv;
     float aces(float x){ return clamp(x*(2.51*x+0.03)/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }
     vec3 toSRGB(vec3 c){ return mix(c*12.92, 1.055*pow(c, vec3(1.0/2.4)) - 0.055, step(0.0031308, c)); }
     void main(){
-      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      vec3 c = texture2D(tDiffuse, vUv).rgb * wb;
       float m = max(c.r, max(c.g, c.b));
       vec3 o = m > 1e-5 ? c*(aces(m)/m) : c;
       float w = smoothstep(3.0, 40.0, m)*0.6;
@@ -195,14 +219,17 @@ composer.addPass(finalPass);
 //  Períodos do dia (valores físicos: céu em cd/m², luzes em lux)
 // =====================================================================
 const MODES = {
-  noite: { nome: 'Noite', exp: 0.26, top: [0.008, 0.011, 0.03], hor: [0.11, 0.1, 0.12], bot: [0.02, 0.02, 0.025], glow: [0.2, 0.11, 0.06], stars: true, sunI: 0.5, sunC: '#a9b8ff', sunPos: [-60, 120, 140], hemiI: 0.9, hemiSky: '#5a6a9a', hemiGnd: '#2a2420', win: 5, lamp: 15000, body: [0.012, 0.016, 0.018], sunShadow: false },
-  azul: { nome: 'Hora azul', exp: 0.085, top: [0.7, 1.3, 3.4], hor: [6.5, 4.6, 4.0], bot: [0.5, 0.5, 0.6], glow: [2.4, 1.0, 0.35], stars: false, sunI: 2.5, sunC: '#ffb27a', sunPos: [-200, 14, 60], hemiI: 7, hemiSky: '#7f95c8', hemiGnd: '#3a3530', win: 6, lamp: 15000, body: [0.25, 0.33, 0.38], sunShadow: false },
-  dia: { nome: 'Dia', exp: 0.00012, top: [1500, 3100, 7400], hor: [6000, 6700, 7600], bot: [1400, 1400, 1400], glow: [0, 0, 0], stars: false, sunI: 62000, sunC: '#fff2df', sunPos: [-80, 140, 60], hemiI: 15000, hemiSky: '#a8c8ff', hemiGnd: '#8a7f70', win: 0, lamp: 0, body: [160, 220, 240], sunShadow: true },
+  noite: { nome: 'Noite', wbK: 3700, exp: 0.24, top: [0.012, 0.014, 0.026], hor: [0.14, 0.12, 0.12], bot: [0.025, 0.024, 0.025], glow: [0.24, 0.13, 0.07], stars: true, sunI: 0.5, sunC: '#a9b8ff', sunPos: [-60, 120, 140], hemiI: 0.9, hemiSky: '#5a6a9a', hemiGnd: '#2a2420', win: 3.5, lamp: 12000, body: [0.012, 0.016, 0.018], sunShadow: false },
+  azul: { nome: 'Hora azul', wbK: 5000, exp: 0.085, top: [0.7, 1.3, 3.4], hor: [6.5, 4.6, 4.0], bot: [0.5, 0.5, 0.6], glow: [2.4, 1.0, 0.35], stars: false, sunI: 2.5, sunC: '#ffb27a', sunPos: [-200, 14, 60], hemiI: 7, hemiSky: '#7f95c8', hemiGnd: '#3a3530', win: 6, lamp: 15000, body: [0.25, 0.33, 0.38], sunShadow: false },
+  dia: { nome: 'Dia', wbK: 6200, exp: 0.00012, top: [1500, 3100, 7400], hor: [6000, 6700, 7600], bot: [1400, 1400, 1400], glow: [0, 0, 0], stars: false, sunI: 62000, sunC: '#fff2df', sunPos: [-80, 140, 60], hemiI: 15000, hemiSky: '#a8c8ff', hemiGnd: '#8a7f70', win: 0, lamp: 0, body: [160, 220, 240], sunShadow: true },
 };
 let exposure = 1;
 function applyMode() {
   const m = MODES[S.mode];
   exposure = m.exp * Math.pow(2, S.ev);
+  // balanço de branco da "câmera": a luz quente continua quente, mas como o olho adaptado a vê
+  { const c = cctToSRGB(m.wbK), Y = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b, k = 0.65;
+    finalPass.uniforms.wb.value.set(1 + k * (Y / c.r - 1), 1 + k * (Y / c.g - 1), 1 + k * (Y / c.b - 1)); }
   exposurePass.uniforms.exposure.value = exposure;
   const u = sky.dome.material.uniforms;
   u.top.value.setRGB(...m.top); u.horizon.value.setRGB(...m.hor); u.bottom.value.setRGB(...m.bot); u.glow.value.setRGB(...m.glow);
@@ -214,7 +241,7 @@ function applyMode() {
   scene.fog.color.setRGB(...m.hor); scene.fog.density = S.fog * 0.0045;
   WU.body.value.setRGB(...m.body); WU.reflectivity.value = S.refl; WU.distortion.value = S.ripple;
   streetLights.visible = S.lamps && S.mode !== 'dia';
-  bloom.strength = S.bloom; shadowsDirty();
+  bloom.strength = S.bloom; shadowsDirty(); if (typeof poke === 'function') poke();
   heat.mat.color.setScalar(0.85 / exposure);
   dimMat.color.setScalar(0.9 / exposure);
 }
@@ -230,20 +257,20 @@ function dimLabel(text, p) { const d = document.createElement('div'); d.classNam
   const h = H(), n = stairSteps();
   dimLine([V(-h, P.towerTop + 1.6, 3.2), V(h, P.towerTop + 1.6, 3.2)]);
   dimLine([V(-h, P.towerTop + 1.2, 3.2), V(-h, P.towerTop + 2.0, 3.2)]); dimLine([V(h, P.towerTop + 1.2, 3.2), V(h, P.towerTop + 2.0, 3.2)]);
-  dimLabel('Vão entre eixos das torres: 100,00 m', V(0, P.towerTop + 2.0, 3.2));
+  dimLabel('Vão ≈ 100 m (publicado)', V(0, P.towerTop + 2.0, 3.2));
   dimLine([V(0, P.cableLow, 2.4), V(0, P.towerTop, 2.4)]);
-  dimLabel(`Flecha do cabo f = ${fmt(P.towerTop - P.cableLow, 2)} m (≈ L/${fmt(P.L / (P.towerTop - P.cableLow), 1)})`, V(0, (P.cableLow + P.towerTop) / 2, 2.4));
+  dimLabel(`Flecha f ≈ ${fmt(P.towerTop - P.cableLow, 2)} m (L/${fmt(P.L / (P.towerTop - P.cableLow), 1)}) · estimada`, V(0, (P.cableLow + P.towerTop) / 2, 2.4));
   dimLine([V(0, 0, 2.2), V(0, deckY(0) - 0.37, 2.2)]);
-  dimLabel(`Gabarito livre ≈ ${fmt(deckY(0) - 0.37, 2)} m sobre o N.A.`, V(0, 2.4, 2.2));
-  dimLabel(`Piso no meio do vão +${fmt(deckY(0), 2)} m`, V(6, deckY(0) + 1.6, 0));
-  dimLabel(`Piso nas torres +${fmt(P.deckEnd, 2)} m · contraflecha ${fmt(P.camber, 2)} m`, V(-h + 8, P.deckEnd + 1.9, 0));
-  dimLabel(`Sela do cabo +${fmt(P.towerTop, 2)} m`, V(-h, P.towerTop + 0.8, -2.2));
-  dimLabel('Largura livre 1,50 m · guarda-corpo 1,20 m', V(22, deckY(22) + 1.5, -1.5));
-  dimLabel(`Pendurais a cada ${fmt(P.hangerStep, 1)} m · Ø 16 mm`, V(-28, cableY(-28) + 0.6, 1.2));
-  dimLabel(`Escada: ${n} degraus × ${fmt((P.deckEnd - P.ground) / n * 100, 0)} cm`, V(h + P.landing + n * P.stairRun / 2, P.ground + 3.2, 1.6));
+  dimLabel(`Gabarito ≈ ${fmt(deckY(0) - 0.37, 2)} m sobre o N.A. · estimado`, V(0, 2.4, 2.2));
+  dimLabel(`Piso no meio ≈ +${fmt(deckY(0), 2)} m · estimado`, V(6, deckY(0) + 1.6, 0));
+  dimLabel(`Piso nas torres ≈ +${fmt(P.deckEnd, 2)} m · contraflecha ≈ ${fmt(P.camber, 2)} m · estimados`, V(-h + 8, P.deckEnd + 1.9, 0));
+  dimLabel(`Sela do cabo ≈ +${fmt(P.towerTop, 2)} m · estimada`, V(-h, P.towerTop + 0.8, -2.2));
+  dimLabel('Largura ≈ 1,50 m (publicada) · guarda-corpo 1,20 m (estimado)', V(22, deckY(22) + 1.5, -1.5));
+  dimLabel(`Pendurais ≈ ${fmt(P.hangerStep, 1)} m · Ø 16 mm · a confirmar`, V(-28, cableY(-28) + 0.6, 1.2));
+  dimLabel(`Escada ≈ ${n} degraus × ${fmt((P.deckEnd - P.ground) / n * 100, 0)} cm · a contar`, V(h + P.landing + n * P.stairRun / 2, P.ground + 3.2, 1.6));
   dimLabel('Ancoragem dos cabos', V(h + P.anchorDist, P.ground + 1.2, 0));
   dimLabel('N.A. médio ±0,00 (referência)', V(-20, 0.1, 10));
-  dimLabel('Praça / cais +1,60 m', V(-h - 4, P.ground + 0.3, 12));
+  dimLabel('Praça / cais ≈ +1,60 m · estimado', V(-h - 4, P.ground + 0.3, 12));
 })();
 
 // =====================================================================
@@ -255,7 +282,7 @@ let lastCalc = null;
 // grupos que iluminam o piso (corrimão, rodapé, escadas, pórtico) têm prioridade
 const FLOOR_MOUNTS = ['handrail', 'postFoot', 'stairs', 'towerTop'];
 function allocate() {
-  const B = QUALITY[S.quality].lights, on = S.groups.filter(g => g.on);
+  const B = QUALITY[S.quality].lights, on = S.groups.filter(isOn);
   const want = on.reduce((a, g) => a + g.nLights, 0), out = new Map();
   if (want <= B) { on.forEach(g => out.set(g.id, g.nLights)); return out; }
   const w = (g) => g.nLights * (FLOOR_MOUNTS.includes(g.mount) ? 2 : 1), W = on.reduce((a, g) => a + w(g), 0);
@@ -266,7 +293,7 @@ function allocate() {
   return out;
 }
 function applyAlloc() { const a = allocate(); let changed = false; S.groups.forEach(g => { const n = a.get(g.id) ?? g.nLights; if (g._alloc !== n) { changed = true; g._alloc = n; } }); return changed; }
-function rebuildAll() { applyAlloc(); rig.shadows = S.shadows; rig.rebuildAll(S.groups); shadowsDirty(); scheduleCalc(); }
+function rebuildAll() { applyAlloc(); rig.shadows = S.shadows && S.quality !== 'leve'; rig.rebuildAll(S.groups); shadowsDirty(); scheduleCalc(); }
 const pendingBuild = new Set();
 function rebuildGroup(g) { pendingBuild.add(g); requestAnimationFrame(flushBuild); }
 function flushBuild() {
@@ -276,11 +303,15 @@ function flushBuild() {
   pendingBuild.clear(); rig.applyShadows(); shadowsDirty(); scheduleCalc(); persist();
 }
 const scheduleCalc = debounce(runCalc, 180);
+let calcF = null, calcV = null;
 function runCalc() {
-  lastCalc = computeGrid(rig, S.groups);
-  const { E, nx, nz } = lastCalc;
+  lastCalc = computeGrid(rig, S.groups);                                  // total (funcional + cênica): mapa e piso 3D
+  calcF = computeGrid(rig, S.groups, { roles: ['funcional'] });           // só funcional: avaliação normativa
+  calcV = computeVertical(rig, S.groups, { roles: ['funcional'] });       // vertical a 1,50 m
+  const src = S.heatSrc === 'funcional' ? calcF : lastCalc;
+  const { nx, nz } = lastCalc;
   for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
-    const c = falseColor(E[i * nz + j]), k = (j * nx + i) * 4;
+    const c = falseColor(src.E[i * nz + j] * (S.heatSrc === 'funcional' ? S.fm : 1)), k = (j * nx + i) * 4;
     heat.data[k] = c[0]; heat.data[k + 1] = c[1]; heat.data[k + 2] = c[2]; heat.data[k + 3] = 255;
   }
   heat.tex.needsUpdate = true;
@@ -291,19 +322,23 @@ function runCalc() {
     dl[k] = h16(Math.min(RGB[q], 6e4)); dl[k + 1] = h16(Math.min(RGB[q + 1], 6e4)); dl[k + 2] = h16(Math.min(RGB[q + 2], 6e4)); dl[k + 3] = h16(1);
   }
   deckLight.tex.needsUpdate = true;
+  poke();
   renderHUD(); renderCalc();
 }
-function classOf(c) { for (const k of NBR5101) if (c.Em >= k.Em && c.U0 >= k.U0) return k.c; return null; }
+/** Valores mantidos = iniciais × fator de manutenção. Classe = a mais exigente atendida (estimativa). */
+const maintained = () => calcF && ({ Em: calcF.Em * S.fm, Emin: calcF.Emin * S.fm, U0: calcF.U0, Ev: calcV.Evmin * S.fm });
+function classOf(m) { for (const k of S.criteria) if (m.Em >= k.Em && m.Emin >= k.Emin) return k.c; return null; }
 function renderHUD() {
-  const st = rig.stats(S.groups), c = lastCalc; if (!c) return;
-  const cls = classOf(c);
+  const st = rig.stats(S.groups), m = maintained(); if (!m) return;
+  const cls = classOf(m), last = S.criteria[S.criteria.length - 1]?.c || '';
   $('#hud').innerHTML = `
-    <div class="chip"><small>Em no piso</small>${fmt(c.Em, 1)} lx</div>
-    <div class="chip"><small>Uniformidade U0</small>${fmt(c.U0, 2)}</div>
+    <div class="chip" title="Só a camada funcional, valor mantido (× FM ${fmt(S.fm, 2)})"><small>Em funcional mantida</small>${fmt(m.Em, 1)} lx</div>
+    <div class="chip"><small>Emin mantida</small>${fmt(m.Emin, 1)} lx</div>
+    <div class="chip" title="Iluminância vertical mínima a 1,50 m, pior sentido"><small>Ev mín. 1,5 m</small>${fmt(m.Ev, 1)} lx</div>
     <div class="chip"><small>Potência</small>${fmt(st.W, 0)} W</div>
-    <div class="chip"><small>Fluxo</small>${fmt(st.lm / 1000, 1)} klm</div>
-    <div class="chip ${cls ? 'ok' : 'no'}"><small>NBR 5101 pedestres</small>${cls ? 'Atende ' + cls : 'Abaixo de P4'}</div>`;
+    <div class="chip ${cls ? 'ok' : 'no'}" title="Estimativa com critérios de referência editáveis na aba Cálculo — confirme na NBR 5101:2024"><small>Estimativa · critério de referência</small>${cls ? 'Compatível com ' + cls + '*' : 'Abaixo de ' + last + '*'}</div>`;
 }
+const poke = () => { perf.lastInput = performance.now(); };
 
 // =====================================================================
 //  Interface
@@ -376,27 +411,28 @@ function renderScenePane() {
     slider({ id: 'fog', label: 'Névoa / maresia', min: 0, max: 1, step: 0.05, value: S.fog, f: v => fmt(v * 100, 0) + '%', on: v => { S.fog = v; applyMode(); persist(); } }),
     el('h3', {}, 'Elementos'),
     toggle({ id: 'tLamps', label: 'Iluminação pública existente', checked: S.lamps, on: v => { S.lamps = v; applyMode(); persist(); } }),
-    toggle({ id: 'tShadow', label: 'Sombras dos projetores (mais pesado)', checked: S.shadows, on: v => { S.shadows = v; rig.shadows = v; rig.applyShadows(); shadowsDirty(); persist(); } }),
-    toggle({ id: 'tPeople', label: 'Pessoas em escala (1,75 m)', checked: S.people, on: v => { S.people = v; people.visible = v; persist(); } }),
+    toggle({ id: 'tShadow', label: 'Sombras dos projetores (mais pesado)', checked: S.shadows, on: v => { S.shadows = v; rig.shadows = v && S.quality !== 'leve'; rig.applyShadows(); shadowsDirty(); if (v && S.quality === 'leve') toast('No modo Leve as sombras dos projetores ficam desligadas.'); persist(); } }),
+    toggle({ id: 'tPeople', label: 'Pessoas em escala (1,75 m)', checked: S.people, on: v => { S.people = v; people.visible = v; perf.lodDirty = true; persist(); } }),
     toggle({ id: 'tCity', label: 'Cidade e barcos', checked: S.city, on: v => { S.city = v; setCity(); persist(); } }),
+    toggle({ id: 'tWater', label: 'Água animada com a cena parada (gasta mais bateria)', checked: S.waterAnim, on: v => { S.waterAnim = v; persist(); } }),
     toggle({ id: 'tDims', label: 'Cotas e medidas', checked: S.dims, on: v => { S.dims = v; dims.visible = v; labelRenderer.render(scene, camera); persist(); } }),
     el('h3', {}, 'Qualidade de renderização'),
     seg([['leve', 'Leve'], ['media', 'Média'], ['alta', 'Alta']], S.quality, v => { S.quality = v; perf.scale = 1; applyQuality(); rebuildAll(); persist(); }, 'qSeg'),
     el('p', { class: 'note', id: 'perfNote' }, 'Leve reduz resolução, reflexo, antisserrilhado e luzes dinâmicas (até 12; Média 28; Alta 44). A resolução também se ajusta sozinha para manter a fluidez. O cálculo de lux sempre usa todas as luminárias.'),
     el('h3', {}, 'Dimensões adotadas no modelo'),
     el('div', { class: 'tblwrap' }, el('table', { class: 'qt', html: `
-      <tr><th>Elemento</th><th>Valor</th></tr>
-      <tr><td>Vão entre torres</td><td>${fmt(P.L, 2)} m</td></tr>
-      <tr><td>Largura livre</td><td>${fmt(P.W, 2)} m</td></tr>
-      <tr><td>Piso nas torres / no meio</td><td>+${fmt(P.deckEnd, 2)} / +${fmt(deckY(0), 2)} m</td></tr>
-      <tr><td>Sela dos cabos (topo útil da torre)</td><td>+${fmt(P.towerTop, 2)} m</td></tr>
-      <tr><td>Cabo no meio do vão / flecha</td><td>+${fmt(P.cableLow, 2)} / ${fmt(P.towerTop - P.cableLow, 2)} m</td></tr>
-      <tr><td>Cabos principais</td><td>2 × Ø 38 mm por lado</td></tr>
-      <tr><td>Pendurais</td><td>Ø 16 mm a cada ${fmt(P.hangerStep, 1)} m</td></tr>
-      <tr><td>Pranchas</td><td>150 × 45 mm, junta 12 mm</td></tr>
-      <tr><td>Guarda-corpo</td><td>${fmt(P.railH, 2)} m, tela 50 × 50 mm</td></tr>
-      <tr><td>Praças / cais</td><td>+${fmt(P.ground, 2)} m</td></tr>` })),
-    el('p', { class: 'note' }, 'Vão, largura e materiais vêm dos dados publicados. Cotas, flecha e seções foram estimadas pelas fotos e por pré-dimensionamento; confira com levantamento topográfico antes de usar em projeto executivo.'),
+      <tr><th>Elemento</th><th>Valor</th><th>Origem</th></tr>
+      <tr><td>Vão entre torres</td><td>${fmt(P.L, 2)} m</td><td>publicado (≈100 m)</td></tr>
+      <tr><td>Largura livre</td><td>${fmt(P.W, 2)} m</td><td>publicado (≈1,5 m)</td></tr>
+      <tr><td>Piso nas torres / no meio</td><td>+${fmt(P.deckEnd, 2)} / +${fmt(deckY(0), 2)} m</td><td>estimado (fotos)</td></tr>
+      <tr><td>Sela dos cabos</td><td>+${fmt(P.towerTop, 2)} m</td><td>estimado (fotos)</td></tr>
+      <tr><td>Cabo no meio / flecha</td><td>+${fmt(P.cableLow, 2)} / ${fmt(P.towerTop - P.cableLow, 2)} m</td><td>estimado (fotos)</td></tr>
+      <tr><td>Cabos principais</td><td>2 × Ø 38 mm por lado</td><td>pré-dimensionado</td></tr>
+      <tr><td>Pendurais</td><td>Ø 16 mm a cada ${fmt(P.hangerStep, 1)} m</td><td>estimado — contar</td></tr>
+      <tr><td>Pranchas</td><td>150 × 45 mm, junta 12 mm</td><td>estimado — medir</td></tr>
+      <tr><td>Guarda-corpo</td><td>${fmt(P.railH, 2)} m, tela 50 × 50 mm</td><td>estimado — medir</td></tr>
+      <tr><td>Praças / cais</td><td>+${fmt(P.ground, 2)} m</td><td>estimado</td></tr>` })),
+    el('p', { class: 'note', html: 'Só o vão, a largura e os materiais vêm de fontes publicadas. O resto foi estimado por fotos ou pré-dimensionado. A lista do que medir está no <a href="guia.html#levantamento" style="color:var(--led)">memorial</a>.' }),
   );
 }
 function setCity() {
@@ -416,8 +452,11 @@ function renderLightPane() {
       S.groups = presetGroups(sel.value); if (custom && custom.fixtures.length) Object.assign(S.groups.find(g => g.mount === 'custom'), { ...custom, id: S.groups.find(g => g.mount === 'custom').id });
       rebuildAll(); renderLightPane(); persist(); toast('Cena aplicada: ' + PRESETS[sel.value].nome);
     } }, 'Aplicar')),
+    el('h3', {}, 'Camadas'),
+    toggle({ id: 'layF', label: 'Funcional — piso, circulação, escadas (avaliada na norma)', checked: S.layers.funcional, on: v => { S.layers.funcional = v; LAYERS.funcional = v; rebuildAll(); renderLightPane(); persist(); } }),
+    toggle({ id: 'layC', label: 'Cênica — torres, cabos, cor, efeitos', checked: S.layers.cenica, on: v => { S.layers.cenica = v; LAYERS.cenica = v; rebuildAll(); renderLightPane(); persist(); } }),
     el('h3', {}, 'Grupos de luminárias'),
-    el('p', { class: 'note' }, 'Cada grupo é uma linha de luminárias montada num ponto da ponte. Ligue, troque o modelo e ajuste cor, potência, nits e facho. A luz é calculada em candela e lux reais.'),
+    el('p', { class: 'note' }, 'Cada grupo é uma linha de luminárias montada num ponto da ponte. Ligue, troque o modelo e ajuste cor, potência, nits e facho, ou carregue a curva fotométrica real (.ies/.ldt) do fabricante.'),
   );
   S.groups.forEach(g => p.append(groupCard(g)));
 }
@@ -426,13 +465,13 @@ function groupCard(g) {
   const T = TYPES[g.type], Mo = MOUNTS[g.mount];
   const open = openGroups.has(g.id);
   const card = el('div', { class: 'group' + (open ? ' open' : '') });
-  const sw = el('span', { class: 'swatch', style: `background:${g.on ? swatchColor(g) : 'transparent'}` });
+  const sw = el('span', { class: 'swatch', style: `background:${isOn(g) ? swatchColor(g) : 'transparent'}` });
   const sub = el('small', {}, '');
   const updSub = () => {
     const rt = rig.rt.get(g.id); const qty = rt ? (T.linear ? `${fmt(rt.length, 0)} m` : `${rt.count} un`) : '';
     const w = rt ? g.power * (T.linear ? rt.length : rt.count) * g.dim / 100 : 0;
-    sub.textContent = `${TYPES[g.type].curto} · ${qty} · ${fmt(w, 0)} W`;
-    sw.style.background = g.on ? swatchColor(g) : 'transparent';
+    sub.textContent = `${roleOf(g) === 'funcional' ? 'Funcional' : 'Cênica'} · ${g.photo ? g.photo.kind : TYPES[g.type].curto} · ${qty} · ${fmt(w, 0)} W${g.on && !isOn(g) ? ' · camada oculta' : ''}`;
+    sw.style.background = isOn(g) ? swatchColor(g) : 'transparent';
   };
   const onInp = el('input', { type: 'checkbox', checked: g.on, 'aria-label': 'Ligar ' + g.name });
   onInp.addEventListener('click', e => e.stopPropagation());
@@ -477,6 +516,27 @@ function groupCard(g) {
     rebuildGroup(g); requestAnimationFrame(() => { const n = groupCard(g); card.replaceWith(n); });
   });
   body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('label', { for: g.id + '-type' }, 'Luminária'), el('b', {}, T.ip)), typeSel, el('p', { class: 'note' }, T.desc)));
+  body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('span', {}, 'Função')),
+    seg([['funcional', 'Funcional'], ['cenica', 'Cênica']], roleOf(g), v => { g.role = v; rebuildGroup(g); requestAnimationFrame(() => { const n = groupCard(g); card.replaceWith(n); }); })));
+  // curva fotométrica real
+  const phIn = el('input', { type: 'file', id: g.id + '-ies', accept: '.ies,.ldt,.eul,.IES,.LDT', hidden: true });
+  phIn.addEventListener('change', async () => {
+    const f = phIn.files[0]; if (!f) return;
+    try {
+      const ph = parsePhotometry(await f.text(), f.name);
+      g.photo = packPhoto(ph); g.photo.file = f.name;
+      if (ph.watts > 0) g.power = +(ph.watts / (T.linear ? Math.max(0.1, ph.lenM || 1) : 1)).toFixed(2);
+      rebuildGroup(g); toast(`Curva carregada: ${ph.name || f.name} — ${fmt(ph.flux, 0)} lm, Imax ${fmt(ph.Imax, 0)} cd, facho ${fmt(ph.beam, 0)}°`, 5000);
+      requestAnimationFrame(() => { const n = groupCard(g); card.replaceWith(n); });
+    } catch (e) { toast('Não consegui ler a curva: ' + e.message, 6000); }
+    phIn.value = '';
+  });
+  body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('span', {}, 'Curva fotométrica'), el('b', {}, g.photo ? g.photo.kind : 'modelo idealizado')),
+    g.photo ? el('p', { class: 'note', html: `<b>${g.photo.name || g.photo.file}</b>${g.photo.maker ? ' · ' + g.photo.maker : ''}<br>${fmt(g.photo.flux, 0)} lm · ${fmt(g.photo.watts, 1)} W · Imax ${fmt(g.photo.Imax, 0)} cd · facho ${fmt(g.photo.beam, 0)}°${T.linear ? ` · peça de ${fmt(g.photo.lenM || 1, 2)} m` : ''}. Potência, fluxo e facho vêm do arquivo; a dimerização continua valendo.` })
+      : el('p', { class: 'note' }, 'Sem arquivo, o facho é um cone uniforme com borda suave: bom para estudo, não para memorial de cálculo. Carregue o .ies ou .ldt do fabricante para usar a distribuição real.'),
+    el('div', { class: 'btns' }, el('button', { class: 'btn', type: 'button', onclick: () => phIn.click() }, g.photo ? 'Trocar arquivo' : 'Carregar .ies / .ldt'), phIn,
+      g.photo ? el('button', { class: 'btn', type: 'button', onclick: () => { g.photo = null; rebuildGroup(g); requestAnimationFrame(() => { const n = groupCard(g); card.replaceWith(n); }); } }, 'Remover curva') : null,
+      g.photo ? el('button', { class: 'btn', type: 'button', title: 'Gira o plano C0 da curva em 90° em torno do eixo da luminária', onclick: () => { g.photoRot = !g.photoRot; rebuildGroup(g); toast(g.photoRot ? 'C0 girado 90°' : 'C0 alinhado ao eixo da ponte / da peça'); } }, 'Girar C0 90°') : null)));
 
   // cor
   const colorBox = el('div', { class: 'field' });
@@ -499,6 +559,7 @@ function groupCard(g) {
   drawColor(); body.append(colorBox);
 
   // potência / nits
+  if (g.photo) { [powSl, powIn, nitsIn].forEach(x => { x.disabled = true; x.title = 'Definido pelo arquivo fotométrico'; }); }
   powSl.addEventListener('input', () => change(v => { g.power = v; })(+powSl.value));
   powIn.addEventListener('change', () => change(v => { g.power = Math.min(T.p[1], Math.max(T.p[0], v)); })(+powIn.value));
   nitsIn.addEventListener('change', () => change(v => {
@@ -511,8 +572,8 @@ function groupCard(g) {
       el('p', { class: 'note' }, 'Ao digitar os nits, a potência é recalculada: P = L · Ω · A / (η · dimmer).')),
     slider({ id: g.id + '-dim', label: 'Dimerização', min: 1, max: 100, step: 1, value: g.dim, f: v => v + '%', on: change(v => { g.dim = v; }) }),
   );
-  if (T.beams.length > 1) body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('span', {}, 'Abertura do facho'), el('b', {}, g.beam + '°')),
-    seg(T.beams.map(b => [b, b + '°']), g.beam, v => { g.beam = v; body.querySelector('.field .lab b').textContent; change(() => {})(); })));
+  if (T.beams.length > 1 && !g.photo) body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('span', {}, 'Abertura do facho'), el('b', {}, g.beam + '°')),
+    seg(T.beams.map(b => [b, b + '°']), g.beam, v => { g.beam = v; change(() => {})(); })));
   const effIn = el('input', { type: 'number', id: g.id + '-eff', min: 20, max: 220, step: 1, placeholder: 'auto: ' + efficacy({ ...g, effOverride: null }), value: g.effOverride || '' });
   effIn.addEventListener('change', () => change(v => { g.effOverride = v > 0 ? v : null; })(parseFloat(effIn.value)));
   body.append(el('div', { class: 'field' }, el('div', { class: 'lab' }, el('label', { for: g.id + '-eff' }, 'Eficácia (lm/W) — vazio = automático pela cor'), el('b', {}, '')), effIn));
@@ -562,19 +623,39 @@ function renderCalc() {
   const tarIn = el('input', { type: 'number', id: 'tarifa', min: 0, max: 5, step: 0.01, value: S.tarifa });
   hoursIn.addEventListener('change', () => { S.hours = +hoursIn.value || 12; renderCalc(); persist(); });
   tarIn.addEventListener('change', () => { S.tarifa = +tarIn.value || 0; renderCalc(); persist(); });
+  const m = maintained(), cls = classOf(m);
+  const fmIn = el('input', { type: 'number', id: 'fm', min: 0.4, max: 1, step: 0.01, value: S.fm });
+  fmIn.addEventListener('change', () => { S.fm = Math.min(1, Math.max(0.4, +fmIn.value || 0.8)); renderHUD(); renderCalc(); persist(); });
+  const crit = el('table', { class: 'qt' });
+  crit.innerHTML = '<tr><th>Classe</th><th>Ē mantida ≥</th><th>Emin mantida ≥</th><th>Situação*</th></tr>';
+  S.criteria.forEach((k, i) => {
+    const ok = m.Em >= k.Em && m.Emin >= k.Emin, tr = el('tr');
+    const inp = (key) => { const x = el('input', { type: 'number', min: 0, step: 0.1, value: k[key], 'aria-label': `${k.c} ${key}`, style: 'width:76px;padding:4px 6px' }); x.addEventListener('change', () => { S.criteria[i][key] = +x.value || 0; persist(); renderHUD(); renderCalc(); }); return x; };
+    tr.append(el('td', {}, k.c), el('td', {}, inp('Em')), el('td', {}, inp('Emin')), el('td', { html: `<span class="pill ${ok ? 'ok' : 'no'}">${ok ? 'compatível' : 'não'}</span>` }));
+    crit.append(tr);
+  });
   p.append(
-    el('h3', {}, 'Iluminância no piso do tabuleiro'),
+    el('div', { class: 'note', html: '<b>Estimativa de estudo.</b> Os resultados abaixo são calculados pelo modelo e dependem de cotas e potências estimadas. Não substituem o cálculo luminotécnico de projeto (software com arquivos IES/LDT certificados, malha e fator de manutenção definidos em norma).' }),
+    el('h3', {}, 'Camada funcional — valores mantidos'),
     el('div', { class: 'kpis', html: `
-      <div class="kpi"><small>Média Em</small><b>${fmt(c.Em, 1)}<em>lx</em></b></div>
-      <div class="kpi"><small>Uniformidade U0</small><b>${fmt(c.U0, 2)}</b></div>
-      <div class="kpi"><small>Mínima</small><b>${fmt(c.Emin, 1)}<em>lx</em></b></div>
-      <div class="kpi"><small>Máxima</small><b>${fmt(c.Emax, 1)}<em>lx</em></b></div>` }),
+      <div class="kpi"><small>Ē mantida</small><b>${fmt(m.Em, 1)}<em>lx</em></b></div>
+      <div class="kpi"><small>Emin mantida</small><b>${fmt(m.Emin, 1)}<em>lx</em></b></div>
+      <div class="kpi"><small>Uniformidade Emin/Ē</small><b>${fmt(m.U0, 2)}</b></div>
+      <div class="kpi"><small>Ev mín. a 1,5 m</small><b>${fmt(m.Ev, 1)}<em>lx</em></b></div>` }),
+    el('div', { class: 'pair' }, el('label', { for: 'fm' }, 'Fator de manutenção (FM)'), fmIn),
+    el('p', { class: 'note' }, `Mantido = inicial × FM. Iniciais da camada funcional: Ē ${fmt(calcF.Em, 1)} lx, Emin ${fmt(calcF.Emin, 1)} lx, Emáx ${fmt(calcF.Emax, 1)} lx. Ev é a iluminância vertical a 1,50 m no eixo, no pior dos dois sentidos de caminhada (reconhecimento de rostos), média ${fmt(calcV.Evavg * S.fm, 1)} lx.`),
+    el('h3', {}, 'Total com a camada cênica (inicial)'),
+    el('div', { class: 'kpis', html: `
+      <div class="kpi"><small>Ē total</small><b>${fmt(c.Em, 1)}<em>lx</em></b></div>
+      <div class="kpi"><small>Emáx total</small><b>${fmt(c.Emax, 1)}<em>lx</em></b></div>` }),
+    el('p', { class: 'note' }, 'A luz cênica (cores, efeitos) não entra na avaliação: luz saturada e dinâmica não serve de base para iluminação de circulação.'),
     toggle({ id: 'tHeat', label: 'Mostrar mapa de falsa cor no piso', checked: S.heat, on: v => { S.heat = v; heat.mesh.visible = v; $('#legend').hidden = !v; persist(); } }),
-    el('p', { class: 'note' }, `Malha de ${c.nx} × ${c.nz} pontos (0,5 m × 0,33 m) sobre os 100 m do piso. Iluminância horizontal ponto a ponto pela lei do inverso do quadrado, E = I(θ)·cos(i)/d², sem refletâncias nem obstruções.`),
-    el('h3', {}, 'NBR 5101 — vias de pedestres (referência)'),
-    el('div', { class: 'tblwrap' }, el('table', { class: 'qt', html: `<tr><th>Classe</th><th>Em mín.</th><th>U0 mín.</th><th>Situação</th></tr>` +
-      NBR5101.map(k => `<tr><td title="${k.uso}">${k.c}</td><td>${k.Em} lx</td><td>${fmt(k.U0, 2)}</td><td><span class="pill ${c.Em >= k.Em && c.U0 >= k.U0 ? 'ok' : 'no'}">${c.Em >= k.Em && c.U0 >= k.U0 ? 'atende' : 'não atende'}</span></td></tr>`).join('') })),
-    el('p', { class: 'note' }, 'Valores de referência das classes P1–P4. Confira a edição vigente da norma e o enquadramento definido pela prefeitura.'),
+    seg([['total', 'Mapa: total inicial'], ['funcional', 'Mapa: funcional mantida']], S.heatSrc || 'total', v => { S.heatSrc = v; runCalc(); persist(); }, 'heatSeg'),
+    el('p', { class: 'note' }, `Malha de ${c.nx} × ${c.nz} pontos (0,5 m × 0,33 m) no piso; ${calcV.n} pontos verticais. Inclui obstrução da tela do guarda-corpo (transmissão 84%), rodapé opaco e o próprio tabuleiro. Não inclui refletâncias (inter-reflexões), pessoas nem vento/balanço da ponte. Fachos: curva IES/LDT quando carregada; senão, cone idealizado.`),
+    el('h3', {}, 'Critérios por classe (editáveis)'),
+    el('div', { class: 'tblwrap' }, crit),
+    el('div', { class: 'note', html: `<b>${cls ? 'Compatível com ' + cls : 'Abaixo da última classe'} (estimativa).</b> * Os valores pré-carregados são uma <b>referência provisória</b> (EN 13201-2, classes P1–P6, que estruturam as classes P da revisão brasileira). Não consegui acessar o texto oficial da ABNT NBR 5101:2024: confira a tabela da norma e digite os valores aqui. A escolha da classe depende do fluxo de pedestres e é decisão de projeto.` }),
+    el('button', { class: 'btn', type: 'button', onclick: () => { S.criteria = CRITERIA_REF.map(k => ({ ...k })); persist(); renderHUD(); renderCalc(); } }, 'Restaurar valores de referência'),
     el('h3', {}, 'Energia'),
     el('div', { class: 'kpis', html: `
       <div class="kpi"><small>Potência instalada</small><b>${fmt(st.W, 0)}<em>W</em></b></div>
@@ -586,7 +667,7 @@ function renderCalc() {
     el('p', { class: 'note' }, 'Não inclui perdas de fontes/drivers (some ~8–12%) nem dimerização programada por horário.'),
     el('h3', {}, 'Quantitativo'),
     el('div', { class: 'tblwrap' }, el('table', { class: 'qt', html: `<tr><th>Grupo</th><th>Qtd</th><th>W</th><th>lm</th></tr>` +
-      st.rows.map(r => `<tr><td>${r.g.name}<br><small style="color:var(--muted)">${r.T.curto} · ${r.g.colorMode === 'cct' ? r.g.cct + ' K' : r.g.rgb} · ${r.g.beam}°</small></td><td>${r.T.linear ? fmt(r.qty, 0) + ' m' : r.qty}</td><td>${fmt(r.w, 0)}</td><td>${fmt(r.f, 0)}</td></tr>`).join('') +
+      st.rows.map(r => `<tr><td>${r.g.name}<br><small style="color:var(--muted)">${roleOf(r.g) === 'funcional' ? 'Funcional' : 'Cênica'} · ${r.g.photo ? r.g.photo.kind : r.T.curto} · ${r.g.colorMode === 'cct' ? r.g.cct + ' K' : r.g.rgb} · ${beamOf(r.g)}°</small></td><td>${r.T.linear ? fmt(r.qty, 0) + ' m' : r.qty}</td><td>${fmt(r.w, 0)}</td><td>${fmt(r.f, 0)}</td></tr>`).join('') +
       `<tr><td><b>Total</b></td><td></td><td><b>${fmt(st.W, 0)}</b></td><td><b>${fmt(st.lm, 0)}</b></td></tr>` })),
   );
 }
@@ -625,6 +706,7 @@ function renderFilePane() {
 function loadProject(d) {
   if (!d || !Array.isArray(d.groups)) throw new Error('formato');
   const { groups, ...rest } = d; Object.assign(S, rest); S.groups = groups.map(g => G({ ...g, id: undefined }));
+  if (!Array.isArray(S.criteria)) S.criteria = CRITERIA_REF.map(c => ({ ...c })); Object.assign(LAYERS, S.layers || {});
   applyMode(); people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
   rebuildAll(); renderScenePane(); renderLightPane(); renderFilePane(); persist();
 }
@@ -654,10 +736,11 @@ async function download(blob, name) {
 }
 function exportCSV() {
   const st = rig.stats(S.groups);
-  const head = ['Grupo', 'Montagem', 'Luminária', 'IP', 'Quantidade', 'Unidade', 'Potência unitária', 'Unid. potência', 'Dimer (%)', 'Potência total (W)', 'Eficácia (lm/W)', 'Fluxo total (lm)', 'Facho (°)', 'Cor', 'Intensidade (cd)', 'Luminância (nits)', 'Efeito'];
-  const rows = st.rows.map(r => [r.g.name, MOUNTS[r.g.mount].nome, r.T.nome, r.T.ip, fmt(r.qty, r.T.linear ? 1 : 0), r.T.linear ? 'm' : 'un', fmt(r.g.power, 2), r.T.unit, r.g.dim, fmt(r.w, 0), efficacy(r.g), fmt(r.f, 0), r.g.beam, r.g.colorMode === 'cct' ? r.g.cct + ' K' : r.g.rgb, fmt(candela(r.g), 0), fmt(nitsOf(r.g), 0), EFFECTS.find(e => e[0] === r.g.effect)[1]]);
+  const head = ['Grupo', 'Função', 'Curva fotométrica', 'Montagem', 'Luminária', 'IP', 'Quantidade', 'Unidade', 'Potência unitária', 'Unid. potência', 'Dimer (%)', 'Potência total (W)', 'Eficácia (lm/W)', 'Fluxo total (lm)', 'Facho (°)', 'Cor', 'Intensidade (cd)', 'Luminância (nits)', 'Efeito'];
+  const rows = st.rows.map(r => [r.g.name, roleOf(r.g), r.g.photo ? (r.g.photo.file || r.g.photo.name) : 'idealizada', MOUNTS[r.g.mount].nome, r.T.nome, r.T.ip, fmt(r.qty, r.T.linear ? 1 : 0), r.T.linear ? 'm' : 'un', fmt(r.g.power, 2), r.T.unit, r.g.dim, fmt(r.w, 0), efficacy(r.g), fmt(r.f, 0), beamOf(r.g), r.g.colorMode === 'cct' ? r.g.cct + ' K' : r.g.rgb, fmt(candela(r.g), 0), fmt(nitsOf(r.g), 0), EFFECTS.find(e => e[0] === r.g.effect)[1]]);
   const c = lastCalc;
-  rows.push([], ['Total', '', '', '', '', '', '', '', '', fmt(st.W, 0), '', fmt(st.lm, 0)], ['Em piso (lx)', fmt(c.Em, 1)], ['U0', fmt(c.U0, 2)], ['Emin (lx)', fmt(c.Emin, 1)], ['Emax (lx)', fmt(c.Emax, 1)]);
+  const mm = maintained();
+  rows.push([], ['Total', '', '', '', '', '', '', '', '', '', '', fmt(st.W, 0), '', fmt(st.lm, 0)], ['ESTIMATIVA DE ESTUDO — confirmar com cálculo de projeto'], ['Fator de manutenção', fmt(S.fm, 2)], ['Ē funcional mantida (lx)', fmt(mm.Em, 1)], ['Emin funcional mantida (lx)', fmt(mm.Emin, 1)], ['Emin/Ē', fmt(mm.U0, 2)], ['Ev mín. 1,5 m mantida (lx)', fmt(mm.Ev, 1)], ['Ē total inicial (lx)', fmt(c.Em, 1)], ['Classe estimada (critério de referência)', classOf(mm) || 'abaixo']);
   const csv = '﻿' + [head, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';')).join('\r\n');
   download(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'ponte-pensil-quantitativo.csv');
 }
@@ -766,6 +849,7 @@ window.addEventListener('keydown', e => { if (e.key === 'Escape' && placing) { p
 // =====================================================================
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight; if (!w || !h) return;
+  if (typeof poke === 'function') poke();
   const dpr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr) * perf.scale); perf.dpr = dpr;
   renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
   composer.setPixelRatio(dpr); composer.setSize(w, h);
@@ -775,8 +859,22 @@ function resize() {
   water.getRenderTarget().setSize(Math.max(64, Math.round(w * dpr * q)), Math.max(64, Math.round(h * dpr * q)));
   bloom.setSize(Math.round(w * dpr * QUALITY[S.quality].bloom), Math.round(h * dpr * QUALITY[S.quality].bloom));
 }
+// Leve (sem antisserrilhado): fecha as juntas de 12 mm na geometria para evitar listras serrilhadas;
+// as juntas continuam visíveis pela textura (cantos arredondados no mapa de relevo)
+let plankBase = null;
+function plankGaps() {
+  const pm = byName(bridge, 'Pranchas_madeira'); if (!pm) return;
+  if (!plankBase) { plankBase = []; for (let i = 0; i < pm.count; i++) { const m = new THREE.Matrix4(); pm.getMatrixAt(i, m); plankBase.push(m); } }
+  const k = S.quality === 'leve' ? (P.plankW + P.plankGap) / P.plankW : 1, sc = new THREE.Matrix4().makeScale(k, 1, 1), m = new THREE.Matrix4();
+  plankBase.forEach((b, i) => pm.setMatrixAt(i, m.copy(b).multiply(sc)));
+  pm.instanceMatrix.needsUpdate = true;
+}
 function applyQuality() {
   const q = QUALITY[S.quality];
+  plankGaps();
+  const sm = S.quality === 'leve' ? 1024 : 2048;
+  if (sun.shadow.mapSize.x !== sm) { sun.shadow.mapSize.set(sm, sm); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } shadowsDirty(); }
+  perf.lodDirty = true;
   for (const rt of [composerRT, water.getRenderTarget()]) if (rt.samples !== q.msaa) { rt.samples = q.msaa; rt.dispose(); }
   resize();
 }
@@ -794,19 +892,21 @@ function feedWaterLights() {
     WU.lCol.value[n].set(L.color.r, L.color.g, L.color.b).multiplyScalar(L.intensity);
     WU.lCos.value[n] = Math.cos(L.angle); n++;
   };
-  for (const g of S.groups) { if (!g.on) continue; const rt = rig.rt.get(g.id); if (rt) for (const l of rt.lights) push(l.light); }
+  for (const g of S.groups) { if (!isOn(g)) continue; const rt = rig.rt.get(g.id); if (rt) for (const l of rt.lights) push(l.light); }
   WU.lN.value = n;
 }
 const clock = new THREE.Clock();
 // interação: qualquer gesto ou ajuste devolve a taxa máxima de quadros
-const poke = () => { perf.lastInput = performance.now(); };
-controls.addEventListener('change', poke);
+controls.addEventListener('change', () => { poke(); perf.lodDirty = true; });
 ['pointerdown', 'wheel', 'input', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, poke, { passive: true }));
-const hasEffects = () => S.groups.some(g => g.on && g.effect !== 'estatico');
+const hasEffects = () => S.groups.some(g => isOn(g) && g.effect !== 'estatico');
 function frame(now) {
   requestAnimationFrame(frame);
 document.addEventListener('visibilitychange', () => { perf.last = performance.now(); clock.getDelta(); });
   perf.idle = !tween && now - perf.lastInput > 2500;
+  // parada de verdade: sem efeitos nem água animada, nada é redesenhado (economiza bateria)
+  if (perf.idle && now - perf.lastInput > 4000 && !S.waterAnim && !hasEffects() && perf.frozen) return;
+  perf.frozen = perf.idle && now - perf.lastInput > 4000;
   // parado: 30 qps com efeitos DMX, 20 qps sem (a água continua mexendo)
   const minGap = perf.idle ? (hasEffects() ? 32 : 48) : 0;
   if (now - perf.last < minGap) return;
@@ -833,12 +933,30 @@ document.addEventListener('visibilitychange', () => { perf.last = performance.no
   feedWaterLights();
   composer.render();
   if (dims.visible) labelRenderer.render(scene, camera);
+  if (perf.lodDirty !== false) updateLOD();
 }
 
 // inicialização
 people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
 env.group.traverse(o => { if (['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro', 'Postes', 'Guarda_corpo_cais', 'Postes_ponte'].includes(o.name)) reflHide.push(o); });
 reflHide.push(people, sky.stars, heat.mesh, dims);
+// LOD: miúdos somem de longe; pranchas viram uma faixa única além de 150 m
+{
+  const deckProxy = (() => {
+    const pos = [], uv = [], idx = [], n = 100;
+    for (let i = 0; i <= n; i++) { const x = -H() + P.L * i / n, y = deckY(x) - 0.002; pos.push(x, y, -0.85, x, y, 0.85); uv.push(0, x / 1.7 / 3, 0.25, x / 1.7 / 3); if (i) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); } }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals();
+    const m = new THREE.Mesh(g, M.wood); m.name = 'Piso_LOD'; m.receiveShadow = true; return m;
+  })();
+  lodAdd(byName(bridge, 'Pranchas_madeira'), 150, () => true, deckProxy);
+  lodAdd(byName(bridge, 'Bracadeiras'), 70);
+  lodAdd(byName(bridge, 'Rodape'), 160);
+  lodAdd(byName(bridge, 'Tela_guarda_corpo'), 380);
+  lodAdd(people, 260, () => S.people);
+  for (const n of ['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro']) lodAdd(byName(env.group, n), 450);
+  lodAdd(byName(env.group, 'Guarda_corpo_cais'), 200);
+  lodAdd(byName(env.group, 'Postes'), 500);
+}
 applyMode(); applyQuality(); rebuildAll();
 renderScenePane(); renderLightPane(); renderFilePane();
 try { const tab = localStorage.getItem('ponte-pensil-tab'); if (tab) document.querySelector(`.tabs button[data-tab="${tab}"]`)?.click(); } catch (e) { /* ignora */ }

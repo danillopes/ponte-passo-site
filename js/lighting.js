@@ -6,6 +6,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { P, H, deckY, cableY, cablePolyline, polyTube, stairSteps } from './model.js';
+import { sampleI } from './photometry.js';
+
+/** Camadas: iluminação funcional (piso, circulação) × cênica (arquitetura, cor, efeitos). */
+export const LAYERS = { funcional: true, cenica: true };
+export const ROLE_DEFAULT = { cable: 'cenica', handrail: 'funcional', hangers: 'cenica', towerUp: 'cenica', towerTop: 'funcional', underDeck: 'cenica', quay: 'cenica', postFoot: 'funcional', stairs: 'funcional', custom: 'funcional' };
+export const roleOf = (g) => g.role || ROLE_DEFAULT[g.mount] || 'cenica';
+export const isOn = (g) => !!g.on && LAYERS[roleOf(g)] !== false;
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
@@ -165,6 +172,7 @@ export function groupColor(g) {
 }
 /** Eficácia efetiva (lm/W): LEDs coloridos rendem menos lúmens por watt. */
 export function efficacy(g) {
+  if (g.photo && g.photo.watts > 0) return Math.round(g.photo.flux / g.photo.watts);
   if (g.effOverride) return g.effOverride;
   const T = TYPES[g.type];
   if (g.colorMode === 'cct') return Math.round(T.eff * (0.86 + 0.14 * Math.min(1, (g.cct - 1800) / 2200)));
@@ -174,13 +182,15 @@ export function efficacy(g) {
 export const solidAngle = (beamDeg) => 2 * Math.PI * (1 - Math.cos(Math.min(beamDeg, 179) * Math.PI / 360));
 /** Fitas/perfis: facho transversal × 120° longitudinal → Ω ≈ 4·asin(sin hT · sin hL). */
 export const LONG_HALF = 60 * Math.PI / 180;
-export const solidAngleOf = (g) => TYPES[g.type].linear ? 4 * Math.asin(Math.sin(Math.min(g.beam, 179) * Math.PI / 360) * Math.sin(LONG_HALF)) : solidAngle(g.beam);
+export const beamOf = (g) => g.photo ? Math.round(g.photo.beam) : g.beam;
+export const photoLen = (g) => Math.max(0.1, g.photo?.lenM || 1);
+export const solidAngleOf = (g) => g.photo ? solidAngle(g.photo.beam) : TYPES[g.type].linear ? 4 * Math.asin(Math.sin(Math.min(g.beam, 179) * Math.PI / 360) * Math.sin(LONG_HALF)) : solidAngle(g.beam);
 export const emitArea = (g) => { const T = TYPES[g.type]; return T.linear ? T.w : T.a; };
 /** Fluxo por luminária (lm) ou por metro (lm/m). */
-export const fluxUnit = (g) => g.power * efficacy(g) * g.dim / 100;
-export const candela = (g) => fluxUnit(g) / solidAngleOf(g);
+export const fluxUnit = (g) => g.photo ? g.photo.flux / (TYPES[g.type].linear ? photoLen(g) : 1) * g.dim / 100 : g.power * efficacy(g) * g.dim / 100;
+export const candela = (g) => g.photo ? g.photo.Imax / (TYPES[g.type].linear ? photoLen(g) : 1) * g.dim / 100 : fluxUnit(g) / solidAngleOf(g);
 /** Luminância da superfície emissora (nits = cd/m²). */
-export const nitsOf = (g) => fluxUnit(g) / (solidAngleOf(g) * emitArea(g));
+export const nitsOf = (g) => candela(g) / emitArea(g);
 export const powerForNits = (g, nits) => nits * solidAngleOf(g) * emitArea(g) / (efficacy(g) * g.dim / 100);
 
 // ---------------------------------------------------------------------
@@ -264,14 +274,15 @@ export class LightRig {
     const colS = groupColor(g), col = colS.clone(); // linear
     const Y = Math.max(luminanceY(col), 0.03);
     const cNorm = col.clone().multiplyScalar(1 / Y);
-    const flux = fluxUnit(g), I0 = candela(g), half = g.beam * Math.PI / 360;
+    const flux = fluxUnit(g), I0 = candela(g), half = beamOf(g) * Math.PI / 360;
+    const ph = g.photo || null, phScale = ph ? (g.dim / 100) * (T.linear ? 0.5 / photoLen(g) : 1) : 0, phRot = g.photoRot ? 90 : 0;
     const nits = nitsOf(g);
     const emitCol = cNorm.clone().multiplyScalar(Math.min(nits, 60000));
     ['r', 'g', 'b'].forEach(k => { emitCol[k] = Math.min(emitCol[k], 60000); });
     const emat = emitterMaterial(); emat.uniforms.uColor.value.copy(emitCol);
     emat.uniforms.uMode.value = EFFECT_ID[g.effect] || 0; emat.uniforms.uSpeed.value = g.speed; emat.uniforms.uLambda.value = g.lambda;
     rt.emitMats.push(emat);
-    const visible = g.on;
+    const visible = isOn(g);
     obj.visible = visible;
     const nL = Math.max(1, g._alloc ?? Math.round(g.nLights * this.budgetScale));
 
@@ -288,7 +299,7 @@ export class LightRig {
         l._len = len; l._pts = pts; l._base = base; offset += len; rt.length += len;
         // elementos para cálculo: 0,5 m
         const sm = sampleLine(pts, 0.5);
-        sm.forEach((o, i) => { const a = sm[Math.max(0, i - 1)].p, b = sm[Math.min(sm.length - 1, i + 1)].p; const t = b.clone().sub(a); if (t.lengthSq() < 1e-8) t.copy(pts[pts.length - 1]).sub(pts[0]); rt.elems.push({ p: o.p, d: l.dir, I: I0 * 0.5, half, t: t.normalize(), c: cNorm }); });
+        sm.forEach((o, i) => { const a = sm[Math.max(0, i - 1)].p, b = sm[Math.min(sm.length - 1, i + 1)].p; const t = b.clone().sub(a); if (t.lengthSq() < 1e-8) t.copy(pts[pts.length - 1]).sub(pts[0]); t.normalize(); rt.elems.push({ p: o.p, d: l.dir, I: I0 * 0.5, half, t, c: cNorm, ph, phScale, phRot, r: refAxis(l.dir, t) }); });
       });
       if (geos.length) { const m = new THREE.Mesh(mergeGeometries(geos), emat); m.name = 'Emissor_linear'; obj.add(m); }
       rt.count = lines.length;
@@ -298,7 +309,7 @@ export class LightRig {
       for (let i = 0; i < nLights; i++) {
         const target = (i + 0.5) * total / nLights; let acc = 0;
         for (const l of lines) {
-          if (target <= acc + l._len) { const loc = locate(l._pts, target - acc); this.addLight(rt, obj, loc, l.dir, per, g, colS, cNorm, l._base + (target - acc), Math.max(g.beam, 100)); break; }
+          if (target <= acc + l._len) { const loc = locate(l._pts, target - acc); this.addLight(rt, obj, loc, l.dir, per, g, colS, cNorm, l._base + (target - acc), Math.max(beamOf(g), 100)); break; }
           acc += l._len;
         }
       }
@@ -315,7 +326,7 @@ export class LightRig {
         lens.geometry.setAttribute('aS', new THREE.InstancedBufferAttribute(aS, 1));
         body.castShadow = false; body.name = 'Corpo_luminaria'; lens.name = 'Lente';
         obj.add(body, lens);
-        pts.forEach(f => rt.elems.push({ p: f.p, d: f.d, I: I0, half, c: cNorm }));
+        pts.forEach(f => rt.elems.push({ p: f.p, d: f.d, I: I0, half, c: cNorm, ph, phScale, phRot, r: refAxis(f.d, null) }));
         // agrega luminárias em nL luzes
         const n = Math.min(nL, pts.length), chunk = pts.length / n;
         for (let i = 0; i < n; i++) {
@@ -329,7 +340,7 @@ export class LightRig {
     return rt;
   }
   addLight(rt, obj, p, d, fluxTotal, g, colS, cNorm, s, beamOverride) {
-    const beam = beamOverride || g.beam, I = fluxTotal / solidAngle(beam);
+    const beam = beamOverride || beamOf(g), I = fluxTotal / solidAngle(beam);
     const L = new THREE.SpotLight(0xffffff, I, 0, Math.min(beam * Math.PI / 360 * 1.15, Math.PI / 2 * 0.98), 0.45, 2);
     L.color.copy(cNorm);
     L.position.copy(p); L.target.position.copy(p).add(d.clone().multiplyScalar(5));
@@ -347,7 +358,7 @@ export class LightRig {
   }
   animate(groups, t) {
     for (const g of groups) {
-      const rt = this.rt.get(g.id); if (!rt || !g.on) continue;
+      const rt = this.rt.get(g.id); if (!rt || !isOn(g)) continue;
       rt.emitMats.forEach(m => { m.uniforms.uTime.value = t; });
       if (g.effect === 'estatico') continue;
       for (const l of rt.lights) {
@@ -359,7 +370,7 @@ export class LightRig {
   stats(groups) {
     let W = 0, lm = 0, units = 0; const rows = [];
     for (const g of groups) {
-      const rt = this.rt.get(g.id); if (!rt || !g.on) continue;
+      const rt = this.rt.get(g.id); if (!rt || !isOn(g)) continue;
       const T = TYPES[g.type], qty = T.linear ? rt.length : rt.count;
       const w = g.power * qty * g.dim / 100, f = fluxUnit(g) * qty;
       W += w; lm += f; units += T.linear ? 0 : rt.count;
@@ -379,16 +390,67 @@ function locate(pts, s) {
   return pts[pts.length - 1].clone();
 }
 
+function refAxis(d, t) {
+  if (t) return t.clone();
+  const r = V(1, 0, 0).addScaledVector(d, -d.x); // eixo da ponte projetado no plano da luminária
+  if (r.lengthSq() < 1e-4) r.set(0, 0, 1).addScaledVector(d, -d.z);
+  return r.normalize();
+}
+const _b = V();
+/** Intensidade (cd) do elemento na direção v (do elemento ao ponto), |v| = d. */
+function intensity(el, v, d) {
+  if (el.ph) {
+    const cg = (v.x * el.d.x + v.y * el.d.y + v.z * el.d.z) / d;
+    const gamma = Math.acos(Math.max(-1, Math.min(1, cg))) * 180 / Math.PI;
+    _b.crossVectors(el.d, el.r);
+    const C = Math.atan2(v.x * _b.x + v.y * _b.y + v.z * _b.z, v.x * el.r.x + v.y * el.r.y + v.z * el.r.z) * 180 / Math.PI + el.phRot;
+    return sampleI(el.ph, C, gamma) * el.phScale;
+  }
+  if (el.t) {
+    const vt = v.x * el.t.x + v.y * el.t.y + v.z * el.t.z;
+    const thL = Math.asin(Math.min(1, Math.abs(vt) / d));
+    const px = v.x - el.t.x * vt, py = v.y - el.t.y * vt, pz = v.z - el.t.z * vt, pl = Math.hypot(px, py, pz) || 1e-6;
+    const thT = Math.acos(Math.max(-1, Math.min(1, (px * el.d.x + py * el.d.y + pz * el.d.z) / pl)));
+    return el.I * soft(thT, el.half) * soft(thL, LONG_HALF);
+  }
+  const th = Math.acos(Math.max(-1, Math.min(1, (v.x * el.d.x + v.y * el.d.y + v.z * el.d.z) / d)));
+  return el.I * soft(th, el.half);
+}
+/** Transmissão entre fonte e ponto: guarda-corpo (tela soldada ~84%, rodapé opaco) e tabuleiro. */
+export const MESH_T = 0.84;
+function transmission(p, q) {
+  let T = 1;
+  for (const s of [-1, 1]) {
+    const zc = s * P.railZ, a = p.z - zc, b = q.z - zc;
+    if (a * b >= 0) continue;
+    const t = a / (a - b), x = p.x + (q.x - p.x) * t, y = p.y + (q.y - p.y) * t;
+    if (Math.abs(x) > H()) continue;
+    const h = y - deckY(x);
+    if (h < 0.12) return 0; if (h <= P.railH) T *= MESH_T;
+  }
+  // fonte sob o piso não ilumina acima dele (exceto se o raio passar por fora do tabuleiro)
+  if (p.y < deckY(p.x) - 0.05 && q.y > deckY(q.x) - 0.05) {
+    const yd = deckY((p.x + q.x) / 2), t = (yd - p.y) / ((q.y - p.y) || 1e-6), z = p.z + (q.z - p.z) * t;
+    if (Math.abs(z) < 0.85) return 0;
+  }
+  return T;
+}
+function collect(rig, groups, roles) {
+  const elems = [];
+  for (const g of groups) { if (!isOn(g) || (roles && !roles.includes(roleOf(g)))) continue; const rt = rig.rt.get(g.id); if (rt) elems.push(...rt.elems); }
+  return elems;
+}
+
 // ---------------------------------------------------------------------
-//  Malha de cálculo — iluminância horizontal no piso (lux)
+//  Malha de cálculo — iluminância horizontal no piso (lux, valores iniciais)
 // ---------------------------------------------------------------------
-export function computeGrid(rig, groups, dx = 0.5, nz = 5) {
+export function computeGrid(rig, groups, opts = {}) {
+  const dx = opts.dx || 0.5, nz = opts.nz || 5, roles = opts.roles || null;
   const xs = [], zs = [];
   for (let x = -H() + dx / 2; x < H(); x += dx) xs.push(x);
   for (let j = 0; j < nz; j++) zs.push(-0.65 + 1.3 * j / (nz - 1));
   const E = new Float32Array(xs.length * nz), RGB = new Float32Array(xs.length * nz * 3);
-  const elems = [];
-  for (const g of groups) { if (!g.on) continue; const rt = rig.rt.get(g.id); if (rt) elems.push(...rt.elems); }
+  const elems = collect(rig, groups, roles);
   const q = V(), v = V();
   for (let i = 0; i < xs.length; i++) {
     const y = deckY(xs[i]);
@@ -398,18 +460,8 @@ export function computeGrid(rig, groups, dx = 0.5, nz = 5) {
         if (el.p.y < y + 0.02) continue;
         v.subVectors(q, el.p); const d2 = v.lengthSq(); if (d2 < 1e-4) continue;
         const d = Math.sqrt(d2);
-        let I;
-        if (el.t) {
-          const vt = v.x * el.t.x + v.y * el.t.y + v.z * el.t.z;
-          const thL = Math.asin(Math.min(1, Math.abs(vt) / d));
-          const px = v.x - el.t.x * vt, py = v.y - el.t.y * vt, pz = v.z - el.t.z * vt, pl = Math.hypot(px, py, pz) || 1e-6;
-          const thT = Math.acos(Math.max(-1, Math.min(1, (px * el.d.x + py * el.d.y + pz * el.d.z) / pl)));
-          I = el.I * soft(thT, el.half) * soft(thL, LONG_HALF);
-        } else {
-          const th = Math.acos(Math.max(-1, Math.min(1, (v.x * el.d.x + v.y * el.d.y + v.z * el.d.z) / d)));
-          I = el.I * soft(th, el.half);
-        }
-        if (I <= 0) continue;
+        let I = intensity(el, v, d); if (I <= 0) continue;
+        I *= transmission(el.p, q); if (I <= 0) continue;
         const ci = (el.p.y - y) / d, ee = I * ci / d2; e += ee;
         if (el.c) { const k = (i * nz + j) * 3; RGB[k] += ee * el.c.r; RGB[k + 1] += ee * el.c.g; RGB[k + 2] += ee * el.c.b; }
       }
@@ -419,6 +471,26 @@ export function computeGrid(rig, groups, dx = 0.5, nz = 5) {
   let sum = 0, mn = Infinity, mx = 0; for (const e of E) { sum += e; mn = Math.min(mn, e); mx = Math.max(mx, e); }
   const Em = sum / E.length;
   return { E, RGB, xs, zs, nx: xs.length, nz, Em, Emin: mn, Emax: mx, U0: Em > 0 ? mn / Em : 0 };
+}
+
+/** Iluminância vertical a 1,50 m no eixo, nos dois sentidos de caminhada (pior caso por ponto). */
+export function computeVertical(rig, groups, opts = {}) {
+  const roles = opts.roles || null, elems = collect(rig, groups, roles), q = V(), v = V();
+  const vals = [];
+  for (let x = -H() + 1; x < H(); x += 1) {
+    q.set(x, deckY(x) + 1.5, 0); let ep = 0, en = 0;
+    for (const el of elems) {
+      v.subVectors(q, el.p); const d2 = v.lengthSq(); if (d2 < 1e-4) continue;
+      const d = Math.sqrt(d2);
+      let I = intensity(el, v, d); if (I <= 0) continue;
+      I *= transmission(el.p, q); if (I <= 0) continue;
+      const cx = -v.x / d; // cosseno entre a direção da fonte e a normal ±X do plano vertical
+      if (cx > 0) ep += I * cx / d2; else en += I * -cx / d2;
+    }
+    vals.push(Math.min(ep, en));
+  }
+  const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+  return { Evmin: Math.min(...vals), Evavg: avg, n: vals.length };
 }
 
 function soft(th, half) { if (th <= half) return 1; if (th < half * 1.3) return 1 - (th - half) / (half * 0.3); return 0; }
@@ -437,10 +509,12 @@ export function falseColor(e) {
 }
 export const FALSE_STOPS = STOPS;
 
-/** NBR 5101 — classes de iluminação para vias de pedestres (referência). */
-export const NBR5101 = [
-  { c: 'P1', Em: 20, U0: 0.3, uso: 'Grande fluxo de pedestres, áreas de destaque' },
-  { c: 'P2', Em: 10, U0: 0.25, uso: 'Fluxo médio (passarelas urbanas)' },
-  { c: 'P3', Em: 5, U0: 0.2, uso: 'Fluxo baixo' },
-  { c: 'P4', Em: 3, U0: 0.2, uso: 'Fluxo muito baixo' },
+/**
+ * Critérios por classe de pedestres. A NBR 5101:2024 não está em acesso aberto; estes valores
+ * são uma REFERÊNCIA PROVISÓRIA (EN 13201-2, classes P1–P6: Ē mantida e Emin mantida) e devem
+ * ser conferidos e, se preciso, editados na aba Cálculo conforme o texto oficial da norma.
+ */
+export const CRITERIA_REF = [
+  { c: 'P1', Em: 15, Emin: 3.0 }, { c: 'P2', Em: 10, Emin: 2.0 }, { c: 'P3', Em: 7.5, Emin: 1.5 },
+  { c: 'P4', Em: 5, Emin: 1.0 }, { c: 'P5', Em: 3, Emin: 0.6 }, { c: 'P6', Em: 2, Emin: 0.4 },
 ];

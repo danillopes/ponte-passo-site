@@ -60,26 +60,127 @@ function noise(g, w, h, n, col, a0, a1, r, rnd) {
     const s = 0.5 + rnd() * r; g.fillRect(rnd() * w, rnd() * h, s, s);
   }
 }
+// ruído de valor 2D periódico (para texturas que repetem sem emenda)
+function makeNoise(seed) {
+  const r = rng(seed), N = 256, perm = new Uint8Array(512), val = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { perm[i] = i; val[i] = r(); }
+  for (let i = 255; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [perm[i], perm[j]] = [perm[j], perm[i]]; }
+  for (let i = 0; i < 256; i++) perm[256 + i] = perm[i];
+  const sm = (t) => t * t * (3 - 2 * t);
+  const n2 = (x, y, px, py) => {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const X0 = ((xi % px) + px) % px, Y0 = ((yi % py) + py) % py, X1 = (X0 + 1) % px, Y1 = (Y0 + 1) % py;
+    const h = (a, b) => val[perm[(perm[a & 255] + b) & 255]];
+    const u = sm(xf), v = sm(yf);
+    return (h(X0, Y0) * (1 - u) + h(X1, Y0) * u) * (1 - v) + (h(X0, Y1) * (1 - u) + h(X1, Y1) * u) * v;
+  };
+  return (x, y, px = 256, py = 256, oct = 4) => { let s = 0, a = 0.5, f = 1, t = 0; for (let o = 0; o < oct; o++) { s += a * n2(x * f, y * f, px * f, py * f); t += a; a *= 0.5; f *= 2; } return s / t; };
+}
+/** Mapa de normais (espaço tangente) a partir de um mapa de altura periódico. */
+function normalTex(hgt, w, h, strength) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'), img = g.createImageData(w, h), d = img.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const xl = hgt[y * w + (x + w - 1) % w], xr = hgt[y * w + (x + 1) % w], yu = hgt[((y + h - 1) % h) * w + x], yd = hgt[((y + 1) % h) * w + x];
+    let nx = (xl - xr) * strength, ny = (yd - yu) * strength, nz = 1; const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
+    const k = (y * w + x) * 4; d[k] = (nx * 0.5 + 0.5) * 255; d[k + 1] = (ny * 0.5 + 0.5) * 255; d[k + 2] = (nz * 0.5 + 0.5) * 255; d[k + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; return t;
+}
+/** Textura a partir de arrays por pixel (cor sRGB 0–1 ou escalar em todos os canais). */
+function arrTex(w, h, fn, srgb) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'), img = g.createImageData(w, h), d = img.data;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = fn(x, y), k = (y * w + x) * 4; d[k] = v[0] * 255; d[k + 1] = v[1] * 255; d[k + 2] = v[2] * 255; d[k + 3] = 255; }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; if (srgb) t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/**
+ * Atlas de pranchas: 4 colunas × 3 linhas = 12 pranchas diferentes.
+ * Cada célula = uma prancha inteira (0,15 m × 1,70 m) → ~850 px/m na largura e ~300 px/m no comprimento.
+ * Inclui veios, fendas, cantos arredondados, parafusos com halo de ferrugem, desgaste no centro
+ * (onde se pisa) e umidade/limo nas pontas (junto ao guarda-corpo).
+ */
+function woodAtlas() {
+  const CW = 128, CH = 512, W = CW * 4, Hh = CH * 3, r = rng(31), nz = makeNoise(5);
+  const col = new Float32Array(W * Hh * 3), hgt = new Float32Array(W * Hh), rough = new Float32Array(W * Hh);
+  const cells = [];
+  for (let i = 0; i < 12; i++) cells.push({ tone: 0.82 + r() * 0.26, red: r() * 0.08, grey: 0.25 + r() * 0.5, ring: 7 + r() * 9, ph: r() * 10, ph2: r() * 10,
+    knots: Array.from({ length: r() < 0.6 ? 1 + (r() * 2 | 0) : 0 }, () => ({ u: 0.2 + r() * 0.6, v: 0.1 + r() * 0.8, s: 0.6 + r() * 0.8 })),
+    cracks: Array.from({ length: r() * 3 | 0 }, () => ({ u: 0.15 + r() * 0.7, v0: r() * 0.3, v1: 0.4 + r() * 0.6 })) });
+  const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  for (let y = 0; y < Hh; y++) for (let x = 0; x < W; x++) {
+    const ci = Math.floor(x / CW) + 4 * Math.floor(y / CH), c = cells[ci];
+    const u = (x % CW) / CW, v = (y % CH) / CH;
+    let wob = 0.15 * Math.sin(v * 6 + c.ph) + 0.05 * Math.sin(v * 23 + c.ph2);
+    for (const k of c.knots) { const du = (u - k.u) / 0.08, dv = (v - k.v) / 0.03; const d2 = du * du + dv * dv; wob += 0.25 * k.s * Math.exp(-d2) * Math.sign(du || 1); }
+    const ring = 0.5 + 0.5 * Math.sin((u * c.ring + wob) * Math.PI * 2);
+    const late = Math.pow(ring, 6), fib = nz(x * 0.9, y * 0.06, 512 * 0.9, 1536 * 0.06, 3);
+    let H = 0.5 - 0.18 * late + 0.12 * (fib - 0.5);
+    // cantos arredondados (≈3 mm) e topos
+    const edge = Math.min(u, 1 - u) * 150, end = Math.min(v, 1 - v) * 1700;
+    H -= 0.35 * (1 - sm(0, 3, edge)) + 0.35 * (1 - sm(0, 4, end));
+    // fendas ao longo do veio
+    let crack = 0; for (const k of c.cracks) if (v > k.v0 && v < k.v1) crack = Math.max(crack, 1 - sm(0.002, 0.006, Math.abs(u - k.u - 0.01 * Math.sin(v * 40))));
+    H -= 0.4 * crack;
+    // nós
+    let knot = 0; for (const k of c.knots) { const du = (u - k.u) / 0.05, dv = (v - k.v) / 0.016; knot = Math.max(knot, Math.exp(-(du * du + dv * dv))); }
+    // parafusos: 2 por longarina (longarinas a ±0,60 m → v = 0,147 e 0,853)
+    let screw = 0, rust = 0;
+    for (const sv of [0.147, 0.853]) for (const su of [0.3, 0.7]) { const du = (u - su) * 150, dv = (v - sv) * 1700, d = Math.hypot(du, dv); if (d < 6) screw = 1; rust = Math.max(rust, Math.exp(-((d - 4) ** 2) / 60) * (dv > 0 ? 1.6 : 0.6)); }
+    if (screw) H = 0.42;
+    // uso: centro (onde se pisa) mais claro e liso; pontas úmidas, escuras, com limo
+    const wear = 1 - sm(0.12, 0.3, Math.abs(v - 0.5)), damp = 1 - sm(0.03, 0.14, Math.min(v, 1 - v)), blot = nz(x * 0.05, y * 0.02, 512 * 0.05, 1536 * 0.02, 3);
+    // cor: marrom tratado → cinza prateado de intempérie
+    let R = 0.43, G = 0.33, B = 0.24;
+    const gry = Math.min(1, c.grey + 0.25 * wear);
+    R = R * (1 - gry) + 0.55 * gry; G = G * (1 - gry) + 0.52 * gry; B = B * (1 - gry) + 0.48 * gry;
+    const t = c.tone * (0.9 + 0.2 * blot) * (1 - 0.35 * late) * (1 - 0.25 * knot) * (1 + 0.1 * wear);
+    R = R * t + c.red; G *= t; B *= t;
+    const dk = 1 - 0.35 * damp; R *= dk * 0.92; G *= dk; B *= dk * 0.9;
+    R = R * (1 - 0.5 * crack); G = G * (1 - 0.5 * crack); B = B * (1 - 0.5 * crack);
+    if (rust > 0.05) { const k = Math.min(0.6, rust * 0.35); R = R * (1 - k) + 0.45 * k; G = G * (1 - k) + 0.22 * k; B = B * (1 - k) + 0.1 * k; }
+    if (screw) { R = 0.32; G = 0.3; B = 0.28; }
+    const i = y * W + x;
+    col[i * 3] = Math.min(1, R); col[i * 3 + 1] = Math.min(1, G); col[i * 3 + 2] = Math.min(1, B);
+    hgt[i] = H;
+    rough[i] = screw ? 0.45 : Math.min(1, 0.86 - 0.2 * wear - 0.12 * damp + 0.08 * late + 0.1 * crack);
+  }
+  const map = arrTex(W, Hh, (x, y) => { const i = (y * W + x) * 3; return [col[i], col[i + 1], col[i + 2]]; }, true);
+  const normal = normalTex(hgt, W, Hh, 5);
+  const rmap = arrTex(W, Hh, (x, y) => { const v = rough[y * W + x]; return [v, v, v]; }, false);
+  return { map, normal, rough: rmap };
+}
+/** Concreto pintado: 512 px = 2,0 m (256 px/m). Poros, variação de pintura e juntas de fôrma a cada 0,60 m. */
+function concreteTex() {
+  const W = 512, nz = makeNoise(9), hgt = new Float32Array(W * W);
+  const cols = [];
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    const big = nz(x / 64, y / 64, 8, 8, 4), fine = nz(x / 3, y / 3, W / 3 | 0, W / 3 | 0, 2);
+    const pore = fine > 0.78 ? (fine - 0.78) * 4 : 0;
+    const joint = Math.exp(-(((y % 154) - 77) ** 2) / 1.5) * 0.6; // 0,60 m
+    hgt[y * W + x] = 0.5 + 0.08 * (big - 0.5) - 0.5 * pore + 0.25 * joint;
+    const t = 0.9 + 0.12 * (big - 0.5) - 0.25 * pore;
+    cols.push(t);
+  }
+  const map = arrTex(W, W, (x, y) => { const t = cols[y * W + x]; return [0.86 * t, 0.85 * t, 0.82 * t]; }, true);
+  return { map, normal: normalTex(hgt, W, W, 3), rough: arrTex(W, W, (x, y) => { const v = 0.82 + 0.12 * (cols[y * W + x] - 0.9); return [v, v, v]; }, false) };
+}
+/** Galvanizado ("spangle") e pintura: variação de rugosidade em placas de 1–3 cm. */
+function spangleTex(seed, base, amp) {
+  const W = 256, r = rng(seed), pts = Array.from({ length: 90 }, () => [r() * W, r() * W, r()]), nz = makeNoise(seed + 1);
+  return arrTex(W, W, (x, y) => {
+    let best = 1e9, v = 0;
+    for (const p of pts) { let dx = Math.abs(x - p[0]), dy = Math.abs(y - p[1]); dx = Math.min(dx, W - dx); dy = Math.min(dy, W - dy); const d = dx * dx + dy * dy; if (d < best) { best = d; v = p[2]; } }
+    const k = Math.min(1, Math.max(0, base + amp * (v - 0.5) + 0.06 * (nz(x / 16, y / 16, 16, 16, 3) - 0.5))); return [k, k, k];
+  }, false);
+}
 export function makeTextures() {
   const r = rng(11);
-  const wood = canvasTex(128, 512, (g, w, h) => {
-    g.fillStyle = '#7b6956'; g.fillRect(0, 0, w, h);
-    for (let i = 0; i < 70; i++) {
-      const x0 = r() * w, amp = 1 + r() * 3, a = 0.05 + r() * 0.18, dark = r() > 0.4;
-      g.strokeStyle = dark ? `rgba(48,36,26,${a})` : `rgba(190,175,150,${a * 0.7})`;
-      g.lineWidth = 0.6 + r() * 1.6; g.beginPath();
-      for (let y = 0; y <= h; y += 8) g.lineTo(x0 + Math.sin(y * 0.02 + i) * amp, y);
-      g.stroke();
-    }
-    noise(g, w, h, 2500, '30,24,18', 0.03, 0.12, 2, r);
-    g.fillStyle = 'rgba(40,30,20,0.35)';
-    for (let k = 0; k < 2; k++) { g.beginPath(); g.ellipse(r() * w, r() * h, 3 + r() * 4, 6 + r() * 6, 0, 0, 7); g.fill(); }
-  });
-  const concrete = canvasTex(256, 256, (g, w, h) => {
-    g.fillStyle = '#d8d6d1'; g.fillRect(0, 0, w, h);
-    noise(g, w, h, 9000, '120,118,112', 0.02, 0.10, 2.2, r);
-    noise(g, w, h, 1500, '255,255,255', 0.03, 0.12, 2, r);
-  });
+  const woodA = woodAtlas(), conc = concreteTex();
+  const wood = woodA.map, concrete = conc.map;
   const pavers = canvasTex(256, 256, (g, w, h) => {
     g.fillStyle = '#6f675e'; g.fillRect(0, 0, w, h);
     const bw = 32, bh = 16;
@@ -118,12 +219,12 @@ export function makeTextures() {
     for (let i = 0; i < winCols; i++) for (let j = 0; j < winRows; j++) {
       if (r() < 0.3) {
         const warm = r() < 0.8;
-        g.fillStyle = warm ? `rgb(255,${170 + r() * 50 | 0},${90 + r() * 50 | 0})` : 'rgb(190,215,255)';
+        g.fillStyle = warm ? `rgb(255,${175 + r() * 45 | 0},${105 + r() * 45 | 0})` : 'rgb(235,232,225)';
         g.globalAlpha = 0.4 + r() * 0.6; g.fillRect(12 + i * 64, 14 + j * 64, 40, 36); g.globalAlpha = 1;
       }
     }
   });
-  return { wood, concrete, pavers, asphalt, grass, mesh, facade, windowsEm };
+  return { wood, woodN: woodA.normal, woodR: woodA.rough, concrete, concN: conc.normal, concR: conc.rough, galvR: spangleTex(41, 0.38, 0.35), paintR: spangleTex(43, 0.45, 0.18), pavers, asphalt, grass, mesh, facade, windowsEm };
 }
 
 /** Mapa de luz do piso: iluminância RGB (lux) calculada para todas as luminárias. */
@@ -136,7 +237,18 @@ export const deckLight = (() => {
 function deckLitWood(mat) {
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.deckE = deckLight.uniform;
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vDeckW; varying float vDeckUp;')
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vDeckW; varying float vDeckUp;\n#ifdef USE_INSTANCING\nattribute vec3 aAtlas;\n#endif')
+      .replace('#include <uv_vertex>', `#include <uv_vertex>
+        #ifdef USE_INSTANCING
+          vec2 au = vMapUv; if (aAtlas.z > 0.5) au = vec2(1.0) - au;
+          vMapUv = (au + aAtlas.xy) * vec2(0.25, 1.0 / 3.0);
+          #ifdef USE_NORMALMAP
+            vNormalMapUv = vMapUv;
+          #endif
+          #ifdef USE_ROUGHNESSMAP
+            vRoughnessMapUv = vMapUv;
+          #endif
+        #endif`)
       .replace('#include <project_vertex>', `#include <project_vertex>
         vec4 dW = vec4(transformed, 1.0);
         #ifdef USE_INSTANCING
@@ -159,12 +271,12 @@ function deckLitWood(mat) {
 
 export function makeMaterials(T) {
   const M = {
-    wood: new THREE.MeshStandardMaterial({ color: 0xffffff, map: T.wood, roughness: 0.82, metalness: 0 }),
-    concrete: new THREE.MeshStandardMaterial({ color: 0xf2f0ec, map: T.concrete, roughness: 0.88 }),
-    concreteGrey: new THREE.MeshStandardMaterial({ color: 0xb9b6b0, map: T.concrete, roughness: 0.9 }),
-    whiteSteel: new THREE.MeshStandardMaterial({ color: 0xeef1f3, roughness: 0.42, metalness: 0.15 }),
+    wood: new THREE.MeshStandardMaterial({ color: 0xffffff, map: T.wood, normalMap: T.woodN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: T.woodR, roughness: 1, metalness: 0 }),
+    concrete: new THREE.MeshStandardMaterial({ color: 0xf6f4f0, map: T.concrete, normalMap: T.concN, normalScale: new THREE.Vector2(0.5, 0.5), roughnessMap: T.concR, roughness: 1 }),
+    concreteGrey: new THREE.MeshStandardMaterial({ color: 0xc2bfb9, map: T.concrete, normalMap: T.concN, normalScale: new THREE.Vector2(0.6, 0.6), roughnessMap: T.concR, roughness: 1.05 }),
+    whiteSteel: new THREE.MeshStandardMaterial({ color: 0xe9ecee, roughnessMap: T.paintR, roughness: 1, metalness: 0.12 }),
     steelDark: new THREE.MeshStandardMaterial({ color: 0x3c4146, roughness: 0.55, metalness: 0.55 }),
-    galv: new THREE.MeshStandardMaterial({ color: 0xa7adb2, roughness: 0.32, metalness: 0.9 }),
+    galv: new THREE.MeshStandardMaterial({ color: 0x9ea4a9, roughnessMap: T.galvR, roughness: 1, metalness: 0.9 }),
     mesh: new THREE.MeshStandardMaterial({ color: 0xf4f6f7, alphaMap: T.mesh, transparent: true, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.2, depthWrite: false }),
     pavers: new THREE.MeshStandardMaterial({ map: T.pavers, roughness: 0.9 }),
     asphalt: new THREE.MeshStandardMaterial({ map: T.asphalt, roughness: 0.95 }),
@@ -185,8 +297,36 @@ export function makeMaterials(T) {
   // Otimização: o entorno (prédios, casas, árvores, grama, vias, barcos) não calcula
   // as luzes spot dos LEDs — só lua/sol/céu. Corta a maior parte do custo por pixel.
   deckLitWood(M.wood);
+  weatheredConcrete(M.concrete, 'branco'); weatheredConcrete(M.concreteGrey, 'cinza');
+  T.galvR.repeat.set(3, 1); T.paintR.repeat.set(2, 2);
   for (const k of ['facade', 'house', 'roof', 'trunk', 'leaf', 'palm', 'grass', 'asphalt', 'hullWhite', 'hullBlue', 'pole']) noSpotLights(M[k]);
   return M;
+}
+
+/** Concreto: respingo e sujeira na base, limo junto ao chão e escorridos sob as vigas (coordenada de mundo). */
+function weatheredConcrete(mat, key) {
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vCW;')
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        vec4 cw = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          cw = instanceMatrix * cw;
+        #endif
+        vCW = (modelMatrix * cw).xyz;`);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vCW;')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        float hg = vCW.y - ${P.ground.toFixed(2)};
+        float splash = 1.0 - smoothstep(0.0, 0.9, hg);
+        float moss = 1.0 - smoothstep(0.0, 0.35, hg);
+        float col = fract(sin(floor(vCW.x * 9.0 + vCW.z * 9.0) * 91.7) * 43758.5);
+        float t1 = ${(P.towerTop - 1.1).toFixed(2)}, t2 = ${(P.towerTop - 3.78).toFixed(2)};
+        float streak = smoothstep(0.55, 1.0, col) * (step(vCW.y, t1) * exp(-(t1 - vCW.y) / 2.4) + step(vCW.y, t2) * exp(-(t2 - vCW.y) / 1.7));
+        diffuseColor.rgb *= 1.0 - 0.3 * splash - 0.16 * streak;
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.74, 0.82, 0.68), 0.55 * moss);`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.55, 0.45 * moss);`);
+  };
+  mat.customProgramCacheKey = () => 'concreto-' + key;
 }
 
 /** Remove o laço de luzes spot do shader deste material (mantém sol, lua e céu). */
@@ -220,7 +360,7 @@ export function polyTube(pts, r, radial = 6) {
       const a = j / radial * Math.PI * 2, c = Math.cos(a), sn = Math.sin(a);
       const nx = N.x * c + B.x * sn, ny = N.y * c + B.y * sn, nz = N.z * c + B.z * sn;
       pos.push(pts[i].x + nx * r, pts[i].y + ny * r, pts[i].z + nz * r);
-      nor.push(nx, ny, nz); uv.push(lens[i] / total, j / radial); aS.push(lens[i]);
+      nor.push(nx, ny, nz); uv.push(lens[i], j / radial); aS.push(lens[i]);
     }
   }
   for (let i = 0; i < n - 1; i++) for (let j = 0; j < radial; j++) {
@@ -272,8 +412,19 @@ function cylSegs(segs, r, mat, name, radial = 8) {
   });
   im.name = name; im.castShadow = true; return im;
 }
+/** UV projetada por face (caixa), em metros/tile: textura com escala real e sem esticar. */
+function boxUV(geo, tile = 2) {
+  const p = geo.attributes.position, n = geo.attributes.normal, uv = geo.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
+    if (ax >= ay && ax >= az) uv.setXY(i, p.getZ(i) / tile, p.getY(i) / tile);
+    else if (az >= ay) uv.setXY(i, p.getX(i) / tile, p.getY(i) / tile);
+    else uv.setXY(i, p.getX(i) / tile, p.getZ(i) / tile);
+  }
+  uv.needsUpdate = true; return geo;
+}
 function box(sx, sy, sz, x, y, z, mat, name) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+  const m = new THREE.Mesh(boxUV(new THREE.BoxGeometry(sx, sy, sz).translate(x, y, z)).translate(-x, -y, -z), mat);
   m.position.set(x, y, z); m.name = name || ''; m.castShadow = m.receiveShadow = true; return m;
 }
 /** Pilar troncocônico (afinamento em X), seção retangular. */
@@ -285,7 +436,7 @@ function taperBox(cx, yb, yt, hxB, hxT, cz, hz, mat, name) {
     p.setXYZ(i, cx + p.getX(i) * 2 * (hxB + (hxT - hxB) * t), yb + t * (yt - yb), cz + p.getZ(i) * 2 * hz);
   }
   g.computeVertexNormals();
-  const uv = g.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 2, uv.getY(i) * 6);
+  boxUV(g, 2);
   const m = new THREE.Mesh(g, mat); m.name = name; m.castShadow = m.receiveShadow = true; return m;
 }
 
@@ -309,14 +460,16 @@ export function buildBridge(M) {
   // --- Pranchas do piso (instanciadas) ---
   const pitch = P.plankW + P.plankGap, n = Math.floor(P.L / pitch);
   const planks = new THREE.InstancedMesh(new THREE.BoxGeometry(P.plankW, P.plankT, P.plankLen), M.wood, n);
-  const col = new THREE.Color();
+  const col = new THREE.Color(), atlas = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     const x = -P.L / 2 + pitch * (i + 0.5);
     _q.setFromAxisAngle(V(0, 0, 1), Math.atan(deckSlope(x)));
     _m.compose(_mid.set(x, deckY(x) - P.plankT / 2, 0), _q, _s.set(1, 1, 1));
     planks.setMatrixAt(i, _m);
-    const t = 0.78 + r() * 0.3; planks.setColorAt(i, col.setRGB(t, t * (0.97 + r() * 0.05), t * (0.93 + r() * 0.08)));
+    const t = 0.92 + r() * 0.12; planks.setColorAt(i, col.setRGB(t, t, t * (0.97 + r() * 0.04)));
+    atlas[i * 3] = Math.floor(r() * 4); atlas[i * 3 + 1] = Math.floor(r() * 3); atlas[i * 3 + 2] = r() < 0.5 ? 1 : 0;
   }
+  planks.geometry.setAttribute('aAtlas', new THREE.InstancedBufferAttribute(atlas, 3));
   planks.name = 'Pranchas_madeira'; planks.receiveShadow = planks.castShadow = true; g.add(planks);
 
   // --- Longarinas e rodapés ---
@@ -395,7 +548,7 @@ function buildHead(s, M) {
   g.add(box(Math.abs(x1 - x0), 0.3, 1.9, (x0 + x1) / 2, P.deckEnd - 0.15, 0, M.concreteGrey, 'Patamar'));
   // escada
   const n = stairSteps(), rise = (P.deckEnd - P.ground) / n, run = P.stairRun;
-  const steps = new THREE.InstancedMesh(new THREE.BoxGeometry(run, rise + 0.12, 1.6), M.concreteGrey, n);
+  const steps = new THREE.InstancedMesh(boxUV(new THREE.BoxGeometry(run, rise + 0.12, 1.6), 1), M.concreteGrey, n);
   for (let k = 0; k < n; k++) {
     const xa = s * (h + P.landing + k * run + run / 2), top = P.deckEnd - (k + 1) * rise;
     _m.compose(_mid.set(xa, top - (rise + 0.12) / 2, 0), _q.identity(), _s.set(1, 1, 1)); steps.setMatrixAt(k, _m);
@@ -449,7 +602,6 @@ export function buildEnvironment(M, T) {
     const road = new THREE.Mesh(rd, M.asphalt); road.position.set(s * (P.quayX + 41), P.ground + 0.012, 0); road.receiveShadow = true; road.name = 'Via'; g.add(road);
     // muro do cais
     const quay = box(1.2, 6, 1600, s * (P.quayX + 0.6), P.ground - 3, 0, M.concreteGrey, 'Cais');
-    const uq = quay.geometry.attributes.uv; for (let i = 0; i < uq.count; i++) uq.setXY(i, uq.getX(i) * 400, uq.getY(i) * 2);
     g.add(quay); pick.push(quay);
     // guarda-corpo do cais (azul, como nas fotos)
     const qr = [];
@@ -650,7 +802,10 @@ export const RiverShader = {
       float d = length(cameraPosition - vWorld);
       float k = distortion / (1.0 + d*0.004);
       vec4 uv = vUv; uv.x += n.x*k*0.25*uv.w; uv.y += n.y*k*uv.w;
-      vec3 refl = texture2DProj(tDiffuse, uv).rgb;
+      // reflexo suavizado: 4 amostras alongadas na vertical (água nunca é espelho perfeito)
+      float bl = (0.004 + k * 0.08) * uv.w;
+      vec3 refl = 0.25 * (texture2DProj(tDiffuse, uv).rgb + texture2DProj(tDiffuse, uv + vec4(0.0, bl, 0.0, 0.0)).rgb
+                + texture2DProj(tDiffuse, uv - vec4(0.0, bl, 0.0, 0.0)).rgb + texture2DProj(tDiffuse, uv + vec4(0.0, 2.0 * bl, 0.0, 0.0)).rgb);
       vec3 V = normalize(cameraPosition - vWorld);
       vec3 N = normalize(vec3(-n.x*0.12, 1.0, -n.y*0.12));
       float c = clamp(dot(V, N), 0.0, 1.0);
@@ -662,7 +817,7 @@ export const RiverShader = {
         float cs = dot(-l, lDir[i]); float sp = smoothstep(lCos[i], mix(lCos[i], 1.0, 0.35), cs);
         E += lCol[i]*sp*max(l.y, 0.0)/d2;
       }
-      vec3 col = body*(1.0 - F) + E*albedo*(1.0 - F)/3.14159 + refl*(F*0.8 + 0.05)*reflectivity;
+      vec3 col = body*(1.0 - F) + E*albedo*(1.0 - F)/3.14159 + refl*(F*0.7 + 0.025)*reflectivity;
       gl_FragColor = vec4(col, 1.0);
     }`,
 };

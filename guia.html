@@ -66,6 +66,7 @@ table { border-collapse: collapse; width: 100%; font-size: 14.5px; font-variant-
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { font: 600 11.5px var(--f-display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 td:not(:first-child) { font-family: var(--f-mono); font-size: 13.5px; }
+.prose td { font-family: var(--f-body) !important; font-size: 14px !important; }
 .callout { border: 1px solid color-mix(in srgb, var(--led) 45%, var(--line)); background: color-mix(in srgb, var(--led) 7%, var(--paper)); border-radius: 10px; padding: 14px 16px; margin: 16px 0; max-width: 72ch; }
 .callout b { color: var(--led); }
 .steps { counter-reset: s; list-style: none; padding: 0; }
@@ -97,6 +98,7 @@ td:not(:first-child) { font-family: var(--f-mono); font-size: 13.5px; }
     <li><a href="#parametrico">3 · Modelagem paramétrica</a></li>
     <li><a href="#materiais">4 · Materiais, escala e render</a></li>
     <li><a href="#iluminacao">5 · Projeto luminotécnico</a></li>
+    <li><a href="#levantamento">6 · O que é real e o que medir</a></li>
     <li><a href="#fontes">Fontes</a></li>
   </ol>
   <a class="back" href="index.html">← Voltar ao modelo 3D</a>
@@ -260,19 +262,20 @@ estais: 2 × 18,64 m   →   cabo por linha ≈ 141,6 m (com 3 m de terminais)</
 
 <section id="materiais">
   <h2><small>4</small>Materiais, escala e renderização</h2>
-  <h3>Densidade de textura e UV</h3>
+  <h3>Densidade de textura e UV (como está no modelo web)</h3>
+  <div class="tbl"><table class="prose">
+    <tr><th>Material</th><th>Mapas</th><th>Densidade</th><th>Projeção / variação</th></tr>
+    <tr><td>Pranchas de madeira</td><td>cor, normal, rugosidade</td><td>~850 px/m na largura · ~300 px/m no comprimento</td><td>atlas com 12 pranchas diferentes, uma prancha inteira por célula, sorteio e espelhamento por instância; veio ao longo da prancha</td></tr>
+    <tr><td>Concreto pintado (torres, escadas, ancoragens)</td><td>cor, normal, rugosidade</td><td>256 px/m (512 px = 2,0 m)</td><td>projeção em caixa em metros (sem esticar); juntas de fôrma a cada 0,60 m; sujeira por altura no shader</td></tr>
+    <tr><td>Aço galvanizado (cabos, pendurais)</td><td>rugosidade "spangle"</td><td>UV em metros ao longo do cabo</td><td>placas de 1–3 cm com rugosidade 0,2–0,55</td></tr>
+    <tr><td>Aço pintado branco</td><td>rugosidade</td><td>2 repetições por UV</td><td>variação suave 0,36–0,54</td></tr>
+  </table></div>
+  <p>Desgaste e sujeira em escala coerente com o uso:</p>
   <ul>
-    <li><b>Alvo:</b> 512 px/m (≈ 5 px/cm) para câmeras de pedestre; 128 px/m basta para vistas aéreas.</li>
-    <li><b>Pranchas:</b> uma ilha UV por prancha, 0,15 × 1,70 m ⇒ ~77 × 870 px. Veio ao longo da prancha (transversal ao eixo da ponte). Varie cor e rugosidade por instância (<i>Object Info › Random</i> ou <i>Random per Island</i>) para quebrar a repetição.</li>
-    <li><b>Concreto das torres:</b> projeção em caixa (box/triplanar) com 2–4 m por repetição e uma camada de sujeira na base (maresia, respingos), mais clara no topo.</li>
-    <li><b>Cabos e tubos:</b> UV cilíndrico, U ao longo do comprimento a 1 repetição por metro.</li>
+    <li><b>Pranchas:</b> centro mais claro e liso (onde se pisa, faixa de ~0,7 m); pontas junto ao guarda-corpo mais escuras, úmidas e com limo; 4 parafusos inox por prancha sobre as longarinas (±0,60 m) com halo de ferrugem escorrendo; fendas ao longo do veio, nós, cantos arredondados de ~3 mm e topos.</li>
+    <li><b>Concreto:</b> respingo de sujeira até ~0,9 m do chão, limo esverdeado e superfície úmida nos primeiros ~0,35 m, escorridos verticais logo abaixo da viga superior e da intermediária (água da chuva que pinga das vigas).</li>
+    <li>Em Blender, reproduza com <i>Random per Island</i> nas pranchas, uma máscara de altura (<i>Geometry › Position Z</i> → <i>Map Range</i>) para a sujeira e uma textura de ruído esticada em Z para os escorridos.</li>
   </ul>
-  <div class="grid2">
-    <div class="card"><h4>Madeira exterior desgastada</h4><p>Base #5C4A38 a #7B6956 (acinzentada pelo sol), roughness 0,75–0,9, normal 0,3 com veios, oclusão escura nas juntas de 12 mm, manchas de umidade nas pontas.</p></div>
-    <div class="card"><h4>Aço galvanizado</h4><p>Metallic 1, base #A7ADB2, roughness 0,3–0,5 com ruído de "spangle" em manchas de 2–5 cm, leve oxidação branca nos grampos.</p></div>
-    <div class="card"><h4>Aço pintado branco</h4><p>Base #EEF1F3, roughness 0,4, metallic 0,15. Tela com máscara alfa de 50 mm (fio = 8–10% da célula).</p></div>
-    <div class="card"><h4>Água do estuário</h4><p>Cor de corpo #1B2A30, roughness 0,03–0,08, ondas por normal procedural com mais amplitude na direção da correnteza (Y). À noite quase tudo é reflexo.</p></div>
-  </div>
   <h3>Como deixar a proporção 100 × 1,5 m legível</h3>
   <ul>
     <li><b>Escala humana:</b> pessoas de 1,75 m no tabuleiro (respeitando o limite de 10) e nas praças. Uma figura no meio do vão mostra na hora a esbeltez.</li>
@@ -297,11 +300,23 @@ Iluminância     E  = I(θ) · cos(i) / d²              (lx)
 Blender spot    Power (W) = 4π · I / 683  ≈ 0,0184 · I
 Blender emissão Strength ≈ π · L / 683  ≈ 0,0046 · L</pre>
   <p>LEDs coloridos rendem menos lúmens por watt que os brancos, porque o olho é menos sensível ao azul e ao vermelho. O simulador reduz a eficácia pela luminância da cor (um azul saturado fica em ~45% da eficácia do branco). Você pode sobrescrever com o valor da ficha técnica.</p>
-  <h3>Metas de referência</h3>
+  <h3>Camadas: funcional × cênica</h3>
+  <p>Cada grupo de luminárias tem uma função. <b>Funcional</b> (perfil do corrimão, balizadores de rodapé e de escada, washers do pórtico) ilumina o piso e a circulação e é a única avaliada contra os critérios de norma. <b>Cênica</b> (fitas nos cabos, pixels nos pendurais, projetores das torres e do cais, luz sob o tabuleiro) valoriza a arquitetura, pode ter cor e efeitos e fica fora da avaliação, porque luz saturada e dinâmica não serve de base para circulação. As duas camadas podem ser ligadas e desligadas separadamente para comparar consumo e aparência.</p>
+  <h3>Curvas fotométricas reais (IES / LDT)</h3>
+  <p>Cada grupo aceita o arquivo do fabricante, em formato IES LM-63 (tipo C) ou EULUMDAT (.ldt). Com o arquivo, potência, fluxo e distribuição vêm da curva, com interpolação bilinear em C e γ e todas as simetrias (axial, bilateral, quadrante, C90–C270). Para perfis lineares, a curva é tratada por metro de peça. O plano C0 fica alinhado ao eixo da peça ou da ponte, e há um botão para girá-lo 90°. Sem arquivo, o facho é um cone uniforme com borda suave, o que serve para estudo mas não para memorial de cálculo.</p>
+  <h3>Como o cálculo funciona e seus limites</h3>
+  <ul>
+    <li><b>Horizontal:</b> malha de 200 × 5 pontos (0,5 m × 0,33 m) sobre o piso; E = I(C,γ)·cos i / d², somando cada luminária individualmente (fitas a cada 0,5 m).</li>
+    <li><b>Vertical:</b> 99 pontos a 1,50 m de altura no eixo; em cada ponto vale o pior dos dois sentidos de caminhada (luz no rosto de quem vem de frente).</li>
+    <li><b>Obstruções:</b> a tela do guarda-corpo transmite ~84% (fio de 4 mm em malha de 50 mm), o rodapé de 12 cm é opaco e o tabuleiro bloqueia o que vem de baixo. Montantes, pendurais e pessoas não entram.</li>
+    <li><b>Valores mantidos</b> = iniciais × fator de manutenção (padrão 0,80, editável). Ambiente marinho e limpeza rara pedem FM menor.</li>
+    <li><b>Não inclui</b> inter-reflexões, a variação de cotas da ponte real nem o balanço com vento.</li>
+  </ul>
+  <div class="callout"><b>Achado da proposta atual.</b> Perfis de corrimão voltados para o piso dão boa iluminância horizontal (Ē mantida ≈ 17 lx na proposta), mas <b>iluminância vertical praticamente nula</b> a 1,50 m: quem atravessa não vê bem o rosto de quem vem de frente. Se o critério da classe adotada exigir Ev ou Esc, será preciso uma componente com luz lateral ou frontal, como pequenos projetores nos pórticos mirando ao longo do vão ou balizadores com facho horizontal.</div>
+  <h3>Critérios: o que é norma e o que é referência</h3>
+  <p>A <b>ABNT NBR 5101:2024</b> organiza as vias em classes M, C e P (pedestres). O texto da norma é pago e não pude consultá-lo. Por isso o modelo <b>não</b> afirma conformidade: mostra "compatível com P<i>n</i>*", e o asterisco remete a uma tabela de critérios editável. Ela vem pré-carregada com a referência EN 13201-2 (Ē e Emin mantidas por classe P1–P6), que deve ser substituída pelos valores da NBR 5101:2024 por quem tiver a norma. A escolha da classe depende do fluxo de pedestres e do contexto urbano e é decisão do projetista.</p>
   <div class="tbl"><table>
-    <tr><th>Critério</th><th>Valor</th><th>Observação</th></tr>
-    <tr><td>Piso do tabuleiro — NBR 5101, classe P1</td><td>Em ≥ 20 lx, U0 ≥ 0,30</td><td>grande fluxo de pedestres</td></tr>
-    <tr><td>Piso do tabuleiro — classe P2</td><td>Em ≥ 10 lx, U0 ≥ 0,25</td><td>fluxo médio</td></tr>
+    <tr><th>Outros critérios de projeto</th><th>Valor</th><th>Observação</th></tr>
     <tr><td>Luminância de fachada (CIE 150), zona E3</td><td>≤ 10 cd/m² médio</td><td>torres brancas: 30–50 lx já bastam</td></tr>
     <tr><td>Temperatura de cor funcional</td><td>2700–3000 K</td><td>menos impacto na fauna do estuário</td></tr>
     <tr><td>Luz emitida para cima / para a água</td><td>mínima</td><td>prefira facho fechado e mira sem transbordo</td></tr>
@@ -318,13 +333,39 @@ Blender emissão Strength ≈ π · L / 683  ≈ 0,0046 · L</pre>
   <p>Na aba Arquivo do modelo, o botão "Baixar GLB" exporta estrutura, emissores e luzes spot com posição, mira e intensidade em candela (extensão KHR_lights_punctual). No Blender, importe em <i>File › Import › glTF 2.0</i> com <i>Lighting Mode: Standard</i>.</p>
 </section>
 
+<section id="levantamento">
+  <h2><small>6</small>O que é real, o que é estimado e o que medir</h2>
+  <p>Nenhuma medida abaixo foi inventada para parecer exata. Onde não há dado publicado, o valor é uma estimativa por foto ou por pré-dimensionamento e está marcado como tal no modelo (cotas na cena e tabela da aba Cena). Para o modelo ficar fiel, estes são os dados que faltam:</p>
+  <div class="tbl"><table class="prose">
+    <tr><th>Elemento</th><th>Valor no modelo</th><th>Status</th><th>Como obter</th></tr>
+    <tr><td>Vão entre eixos das torres</td><td>100,0 m</td><td>publicado (≈100 m)</td><td>trena laser / estação total entre eixos; ou planta da prefeitura</td></tr>
+    <tr><td>Largura livre do passeio</td><td>1,50 m</td><td>publicado (≈1,5 m)</td><td>trena entre faces internas do guarda-corpo em 3 pontos</td></tr>
+    <tr><td>Cotas do piso (torres e meio) e contraflecha</td><td>+5,20 / +6,00 m; 0,80 m</td><td>estimado por foto</td><td>nível ou GNSS RTK no piso a cada 10 m, com o N.A. do dia anotado</td></tr>
+    <tr><td>Nível d'água de referência</td><td>±0,00 (médio)</td><td>convencional</td><td>régua ou dado da maré/Capitania; registrar N.A. máximo de cheia</td></tr>
+    <tr><td>Altura das torres e cota da sela</td><td>+14,50 m</td><td>estimado por foto</td><td>estação total ou foto ortogonal com alvo de escala</td></tr>
+    <tr><td>Flecha do cabo / cota no meio do vão</td><td>7,05 m / +7,45 m</td><td>estimado por foto</td><td>medir altura do cabo sobre o corrimão no meio e em ¼ do vão</td></tr>
+    <tr><td>Número e diâmetro dos cabos principais</td><td>2 × Ø 38 mm por lado</td><td>pré-dimensionado</td><td>paquímetro + placa/nota do fornecedor; projeto estrutural</td></tr>
+    <tr><td>Espaçamento e diâmetro dos pendurais</td><td>2,0 m · Ø 16 mm</td><td>estimado</td><td>contar pendurais por lado (foto de drone de cima) e medir um</td></tr>
+    <tr><td>Seção das pernas, vigas e painel da torre</td><td>1,50→0,70 × 0,50 m</td><td>estimado por foto</td><td>trena na base; foto frontal e lateral com escala</td></tr>
+    <tr><td>Bloco de ancoragem (posição e tamanho)</td><td>14 m atrás da torre</td><td>estimado</td><td>medir na praça; parte enterrada só pelo projeto</td></tr>
+    <tr><td>Escada (degraus, espelho, piso)</td><td>20 × 18 cm, piso 28 cm</td><td>estimado</td><td>contar degraus e medir um</td></tr>
+    <tr><td>Pranchas (seção, junta, espécie)</td><td>150 × 45 mm, junta 12 mm</td><td>estimado</td><td>trena/paquímetro; espécie pela nota de compra</td></tr>
+    <tr><td>Longarinas e transversinas</td><td>U 200 / U 127, a cada 1,0 m</td><td>estimado</td><td>foto de baixo do tabuleiro e medição</td></tr>
+    <tr><td>Guarda-corpo e tela</td><td>1,20 m · malha 50 × 50 mm</td><td>estimado</td><td>trena; contar células da tela</td></tr>
+    <tr><td>Posição da ponte de concreto Anita Garibaldi</td><td>280 m rio acima</td><td>aproximado</td><td>imagem de satélite georreferenciada</td></tr>
+    <tr><td>Iluminação instalada hoje</td><td>"situação atual" aproximada</td><td>estimado por foto noturna</td><td>modelos, potências e posições reais + arquivos IES/LDT dos fabricantes</td></tr>
+  </table></div>
+  <p><b>Fotos de referência que mais ajudam:</b> elevação lateral inteira tirada da margem, com a câmera nivelada e a distância conhecida (dá cotas por proporção); torre de frente e de lado; vista de baixo do tabuleiro; detalhe das selas e da ancoragem; uma noturna sem pessoas, com exposição registrada (ISO, abertura, tempo) para calibrar o modelo.</p>
+</section>
+
 <section id="fontes">
   <h2><small>Fontes</small>Referências</h2>
   <ul class="src">
     <li>GZH — infográfico da ponte pênsil de Torres (2023): <a href="https://gauchazh.clicrbs.com.br/comportamento/verao/noticia/2023/02/infografico-mostra-como-e-e-onde-fica-a-ponte-pensil-que-virou-em-torres-cled9irb60098017lyr0xxd63.html">gauchazh.clicrbs.com.br</a></li>
     <li>NSC Total — reabertura em 21/06/2024, limite de 10 pessoas, elevação de 2 m, R$ 701,8 mil: <a href="https://www.nsctotal.com.br/?p=7201187">nsctotal.com.br</a></li>
     <li>Jornal do Comércio — obra na fase de cabos e pranchas (fev/2024): <a href="https://www.jornaldocomercio.com/geral/2024/02/1143352-apos-um-ano-de-rompimento-ponte-pensil-de-torres-esta-prestes-a-ser-concluida.html">jornaldocomercio.com</a></li>
-    <li>ABNT NBR 7188 (cargas móveis em pontes e passarelas), NBR 14718 (guarda-corpos), NBR 9050 (acessibilidade), NBR 5101 (iluminação pública), NBR 6123 (vento). CIE 150 (luz intrusiva).</li>
+    <li>ABNT NBR 7188 (cargas móveis em pontes e passarelas), NBR 14718 (guarda-corpos), NBR 9050 (acessibilidade), NBR 5101:2024 (iluminação viária — texto oficial não consultado), NBR 6123 (vento). EN 13201-2 (classes P, usada como referência provisória). CIE 150 (luz intrusiva).</li>
+    <li>Sobre a estrutura de classes M/C/P da NBR 5101:2024: <a href="https://demape.com.br/classes-c-p-nbr-5101-2024-tabelas-lux-uniformidade-ti/">Demape</a> e <a href="https://projredes.com.br/artigo-luminotecnico.html">ProjRedes</a> (sem reproduzir as tabelas).</li>
     <li>19 fotografias da ponte fornecidas pelo autor (dia, noite, obra e drone).</li>
   </ul>
 </section>
