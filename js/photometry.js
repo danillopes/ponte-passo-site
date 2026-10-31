@@ -19,7 +19,16 @@ export function parseIES(text, fileName = '') {
   const tilt = lines[i].split('=')[1].trim().toUpperCase(); i++;
   let rest = lines.slice(i).join(' ');
   let v = num(rest);
-  if (tilt === 'INCLUDE') { const nt = v[1]; v = v.slice(2 + 2 * nt); }
+  let tiltGeometry = null, tiltAngles = null, tiltFactors = null;
+  if (tilt === 'INCLUDE') {
+    tiltGeometry = v[0]; const nt = v[1];
+    if (![1, 2, 3].includes(tiltGeometry) || !Number.isInteger(nt) || nt < 1) throw new Error('Bloco TILT=INCLUDE inválido.');
+    tiltAngles = v.slice(2, 2 + nt); tiltFactors = v.slice(2 + nt, 2 + 2 * nt);
+    if (tiltAngles.length !== nt || tiltFactors.length !== nt || [...tiltAngles, ...tiltFactors].some(x => !Number.isFinite(x))) throw new Error('Tabela TILT=INCLUDE incompleta.');
+    v = v.slice(2 + 2 * nt);
+  } else if (tilt !== 'NONE') {
+    throw new Error('IES com TILT em arquivo externo não é autocontido. Use uma versão TILT=NONE ou TILT=INCLUDE.');
+  }
   // linha 10: nLamps, lmPerLamp, multiplier, nV, nH, photometricType, units, width, length, height
   const [nLamps, lmLamp, mult, nV, nH, ptype, units, w, len, h] = v; v = v.slice(10);
   // linha 11: ballastFactor, futureUse, inputWatts
@@ -35,6 +44,7 @@ export function parseIES(text, fileName = '') {
     kind: 'IES', name: meta.LUMINAIRE || meta.LUMCAT || fileName, maker: meta.MANUFAC || '',
     watts: watts || 0, lampLumens: lmLamp > 0 ? lmLamp * nLamps : null,
     lenM: Math.abs(len) * toM, widthM: Math.abs(w) * toM,
+    tiltGeometry, tiltAngles, tiltFactors,
   });
   return out;
 }
@@ -116,7 +126,11 @@ function normalize(t, meta) {
   };
   const sample = (c) => { let i = 0; while (i < C.length - 2 && C[i + 1] <= c) i++; return I[i]; };
   const beam = Math.max(4, Math.min(170, (beamAt(sample(0)) + beamAt(sample(90))) / 2));
-  return { ...meta, C, G, I, flux, Imax, beam };
+  let fieldGamma = 0;
+  const fieldLimit = Imax * 0.01;
+  for (const row of I) for (let g = 0; g < G.length; g++) if (row[g] >= fieldLimit) fieldGamma = Math.max(fieldGamma, G[g]);
+  const field = Math.max(beam, Math.min(178, 2 * fieldGamma));
+  return { ...meta, C, G, I, flux, Imax, beam, field };
 }
 
 /** Intensidade (cd) num plano C e ângulo γ, por interpolação bilinear. */
@@ -133,6 +147,16 @@ export function sampleI(ph, C, g) {
   return Math.max(0, i0 + (i1 - i0) * tc);
 }
 
+/** Multiplicador fotométrico para a inclinação instalada da luminária. */
+export function tiltFactor(ph, tiltDeg) {
+  const A = ph?.tiltAngles, F = ph?.tiltFactors;
+  if (!A?.length || !F?.length) return 1;
+  const x = Math.max(A[0], Math.min(A[A.length - 1], tiltDeg));
+  let i = 0; while (i < A.length - 2 && A[i + 1] < x) i++;
+  const t = A[i + 1] > A[i] ? (x - A[i]) / (A[i + 1] - A[i]) : 0;
+  return Math.max(0, F[i] + (F[i + 1] - F[i]) * t);
+}
+
 export function parsePhotometry(text, fileName) {
   const lower = fileName.toLowerCase();
   if (lower.endsWith('.ldt') || lower.endsWith('.eul')) return parseLDT(text, fileName);
@@ -141,4 +165,9 @@ export function parsePhotometry(text, fileName) {
 }
 
 /** Versão compacta para salvar no projeto (.json). */
-export const packPhoto = (p) => p && ({ kind: p.kind, name: p.name, maker: p.maker, watts: p.watts, lenM: p.lenM, C: p.C, G: p.G, I: p.I.map(r => r.map(x => Math.round(x * 10) / 10)), flux: p.flux, Imax: p.Imax, beam: p.beam });
+export const packPhoto = (p) => p && ({
+  kind: p.kind, name: p.name, maker: p.maker, watts: p.watts, lenM: p.lenM,
+  C: p.C, G: p.G, I: p.I.map(r => r.map(x => Math.round(x * 10) / 10)),
+  flux: p.flux, Imax: p.Imax, beam: p.beam, field: p.field,
+  tiltGeometry: p.tiltGeometry, tiltAngles: p.tiltAngles, tiltFactors: p.tiltFactors,
+});

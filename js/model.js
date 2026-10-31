@@ -272,18 +272,19 @@ function deckLitWood(mat) {
 export function makeMaterials(T) {
   const M = {
     wood: new THREE.MeshStandardMaterial({ color: 0xffffff, map: T.wood, normalMap: T.woodN, normalScale: new THREE.Vector2(0.9, 0.9), roughnessMap: T.woodR, roughness: 1, metalness: 0 }),
-    concrete: new THREE.MeshStandardMaterial({ color: 0xf6f4f0, map: T.concrete, normalMap: T.concN, normalScale: new THREE.Vector2(0.5, 0.5), roughnessMap: T.concR, roughness: 1 }),
-    concreteGrey: new THREE.MeshStandardMaterial({ color: 0xc2bfb9, map: T.concrete, normalMap: T.concN, normalScale: new THREE.Vector2(0.6, 0.6), roughnessMap: T.concR, roughness: 1.05 }),
-    whiteSteel: new THREE.MeshStandardMaterial({ color: 0xe9ecee, roughnessMap: T.paintR, roughness: 1, metalness: 0.12 }),
-    steelDark: new THREE.MeshStandardMaterial({ color: 0x3c4146, roughness: 0.55, metalness: 0.55 }),
-    galv: new THREE.MeshStandardMaterial({ color: 0x9ea4a9, roughnessMap: T.galvR, roughness: 1, metalness: 0.9 }),
+    concrete: new THREE.MeshStandardMaterial({ color: 0xdedbd4, map: T.concrete, normalMap: T.concN, normalScale: new THREE.Vector2(0.62, 0.62), roughnessMap: T.concR, roughness: 0.94 }),
+    concreteGrey: new THREE.MeshStandardMaterial({ color: 0xaaa7a0, map: T.concrete, normalMap: T.concN, normalScale: new THREE.Vector2(0.72, 0.72), roughnessMap: T.concR, roughness: 0.98 }),
+    whiteSteel: new THREE.MeshStandardMaterial({ color: 0xd9dcde, roughnessMap: T.paintR, roughness: 0.78, metalness: 0.08 }),
+    steelDark: new THREE.MeshStandardMaterial({ color: 0x353a3f, roughness: 0.48, metalness: 0.62 }),
+    galv: new THREE.MeshStandardMaterial({ color: 0x9aa0a5, roughnessMap: T.galvR, roughness: 0.68, metalness: 0.78 }),
     mesh: new THREE.MeshStandardMaterial({ color: 0xf4f6f7, alphaMap: T.mesh, transparent: true, side: THREE.DoubleSide, roughness: 0.5, metalness: 0.2, depthWrite: false }),
-    pavers: new THREE.MeshStandardMaterial({ map: T.pavers, roughness: 0.9 }),
-    asphalt: new THREE.MeshStandardMaterial({ map: T.asphalt, roughness: 0.95 }),
-    grass: new THREE.MeshStandardMaterial({ map: T.grass, roughness: 1 }),
-    facade: new THREE.MeshStandardMaterial({ map: T.facade, emissiveMap: T.windowsEm, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.8 }),
-    house: new THREE.MeshStandardMaterial({ color: 0xe8e2d6, map: T.facade, emissiveMap: T.windowsEm, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.85 }),
-    roof: new THREE.MeshStandardMaterial({ color: 0x9a4a32, roughness: 0.8 }),
+    pavers: new THREE.MeshStandardMaterial({ map: T.pavers, bumpMap: T.pavers, bumpScale: 0.025, roughness: 0.9 }),
+    asphalt: new THREE.MeshStandardMaterial({ map: T.asphalt, bumpMap: T.asphalt, bumpScale: 0.012, roughness: 0.96 }),
+    grass: new THREE.MeshStandardMaterial({ map: T.grass, bumpMap: T.grass, bumpScale: 0.035, roughness: 1 }),
+    facade: new THREE.MeshStandardMaterial({ map: T.facade, emissiveMap: T.windowsEm, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.8, vertexColors: true }),
+    house: new THREE.MeshStandardMaterial({ color: 0xe8e2d6, map: T.facade, emissiveMap: T.windowsEm, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.85, vertexColors: true }),
+    roof: new THREE.MeshStandardMaterial({ color: 0x874a38, roughness: 0.9 }),
+    cityTrim: new THREE.MeshStandardMaterial({ color: 0xb8b7b3, roughness: 0.84, metalness: 0.02 }),
     hullWhite: new THREE.MeshStandardMaterial({ color: 0xf3f4f5, roughness: 0.5 }),
     hullBlue: new THREE.MeshStandardMaterial({ color: 0x1f4f9a, roughness: 0.5 }),
     trunk: new THREE.MeshStandardMaterial({ color: 0x6b5a48, roughness: 0.95 }),
@@ -299,7 +300,7 @@ export function makeMaterials(T) {
   deckLitWood(M.wood);
   weatheredConcrete(M.concrete, 'branco'); weatheredConcrete(M.concreteGrey, 'cinza');
   T.galvR.repeat.set(3, 1); T.paintR.repeat.set(2, 2);
-  for (const k of ['facade', 'house', 'roof', 'trunk', 'leaf', 'palm', 'grass', 'asphalt', 'hullWhite', 'hullBlue', 'pole']) noSpotLights(M[k]);
+  for (const k of ['facade', 'house', 'roof', 'cityTrim', 'trunk', 'leaf', 'palm', 'grass', 'asphalt', 'hullWhite', 'hullBlue', 'pole']) noSpotLights(M[k]);
   return M;
 }
 
@@ -625,7 +626,7 @@ export function buildEnvironment(M, T) {
   hm.name = 'Luminarias_publicas'; g.add(hm);
 
   // --- Edificações ---
-  const tall = [], low = [], roofs = [];
+  const tall = [], low = [], roofs = [], cityDetails = [];
   const facadeUV = (geo, w, hgt, d, floor = 3) => {
     const uv = geo.attributes.uv; // ordem: px, nx, py, ny, pz, nz (4 vértices cada)
     const dims = [[d, hgt], [d, hgt], [0, 0], [0, 0], [w, hgt], [w, hgt]];
@@ -633,6 +634,11 @@ export function buildEnvironment(M, T) {
       const i = f * 4 + k; const [fw, fh] = dims[f];
       if (!fw) uv.setXY(i, 0.01, 0.01); else uv.setXY(i, uv.getX(i) * fw / (4 * floor), uv.getY(i) * fh / (4 * floor));
     }
+  };
+  const tint = (geo, c) => {
+    const a = new Float32Array(geo.attributes.position.count * 3);
+    for (let i = 0; i < geo.attributes.position.count; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+    geo.setAttribute('color', new THREE.BufferAttribute(a, 3));
   };
   const occupied = [];
   const free = (x, z, w, d) => occupied.every(o => Math.abs(o[0] - x) > (o[2] + w) / 2 + 4 || Math.abs(o[1] - z) > (o[3] + d) / 2 + 4);
@@ -643,7 +649,20 @@ export function buildEnvironment(M, T) {
     const near = Math.max(0, 1 - Math.abs(x) / 400);
     const hgt = 18 + r() * 55 * (0.5 + near);
     occupied.push([x, z, w, d]);
-    const geo = new THREE.BoxGeometry(w, hgt, d); facadeUV(geo, w, hgt, d); geo.translate(x, P.ground + hgt / 2, z); tall.push(geo);
+    const geo = new THREE.BoxGeometry(w, hgt, d); facadeUV(geo, w, hgt, d);
+    const tone = 0.78 + r() * 0.24, cool = r() * 0.05; tint(geo, new THREE.Color(tone - cool, tone - cool * 0.4, tone));
+    geo.translate(x, P.ground + hgt / 2, z); tall.push(geo);
+    // platibandas, recuos técnicos e algumas linhas de varanda quebram a repetição dos blocos.
+    const crown = new THREE.BoxGeometry(w * 1.035, 0.32, d * 1.035); crown.translate(x, P.ground + hgt + 0.16, z); cityDetails.push(crown);
+    if (r() < 0.72) {
+      const pw = w * (0.34 + r() * 0.3), pd = d * (0.34 + r() * 0.3), ph = 1.1 + r() * 1.8;
+      const pent = new THREE.BoxGeometry(pw, ph, pd); pent.translate(x + (r() - 0.5) * w * 0.18, P.ground + hgt + ph / 2 + 0.3, z + (r() - 0.5) * d * 0.18); cityDetails.push(pent);
+    }
+    const bands = 1 + (r() * 3 | 0);
+    for (let k = 1; k <= bands; k++) {
+      const band = new THREE.BoxGeometry(w * 1.018, 0.10, d * 1.018);
+      band.translate(x, P.ground + hgt * k / (bands + 1), z); cityDetails.push(band);
+    }
   }
   // Passo de Torres (SC): casas baixas com telhado
   for (let i = 0; i < 160; i++) {
@@ -651,17 +670,20 @@ export function buildEnvironment(M, T) {
     if (!free(x, z, w, d)) continue;
     occupied.push([x, z, w, d]);
     const hgt = r() < 0.75 ? 3.2 + r() * 1.5 : 6.5 + r() * 2;
-    const geo = new THREE.BoxGeometry(w, hgt, d); facadeUV(geo, w, hgt, d, 3.2); geo.translate(x, P.ground + hgt / 2, z); low.push(geo);
+    const geo = new THREE.BoxGeometry(w, hgt, d); facadeUV(geo, w, hgt, d, 3.2);
+    const tone = 0.8 + r() * 0.22, warm = r() * 0.08; tint(geo, new THREE.Color(tone, tone - warm * 0.35, tone - warm));
+    geo.translate(x, P.ground + hgt / 2, z); low.push(geo);
     const shp = new THREE.Shape([new THREE.Vector2(-w / 2 - 0.4, 0), new THREE.Vector2(w / 2 + 0.4, 0), new THREE.Vector2(0, 1.8)]);
     const rf = new THREE.ExtrudeGeometry(shp, { depth: d + 0.6, bevelEnabled: false }); rf.translate(0, 0, -(d + 0.6) / 2); rf.translate(x, P.ground + hgt, z); roofs.push(rf);
   }
   // edificações baixas junto às praças (quiosque "Barcos", livraria etc.)
   for (const [x, z, w, d, hh] of [[-(P.quayX + 12), 16, 8, 5, 3.4], [-(P.quayX + 14), -20, 10, 7, 3.6], [P.quayX + 14, -14, 22, 12, 4.2], [P.quayX + 12, 20, 6, 5, 3.2]]) {
-    const geo = new THREE.BoxGeometry(w, hh, d); facadeUV(geo, w, hh, d, 3.2); geo.translate(x, P.ground + hh / 2, z); low.push(geo);
+    const geo = new THREE.BoxGeometry(w, hh, d); facadeUV(geo, w, hh, d, 3.2); tint(geo, new THREE.Color(0.92, 0.89, 0.84)); geo.translate(x, P.ground + hh / 2, z); low.push(geo);
   }
   const tallM = new THREE.Mesh(mergeGeometries(tall), M.facade); tallM.name = 'Edificios_Torres'; tallM.castShadow = tallM.receiveShadow = true; g.add(tallM);
   const lowM = new THREE.Mesh(mergeGeometries(low), M.house); lowM.name = 'Casas_PassoDeTorres'; lowM.castShadow = lowM.receiveShadow = true; g.add(lowM);
   const roofM = new THREE.Mesh(mergeGeometries(roofs), M.roof); roofM.name = 'Telhados'; roofM.castShadow = true; g.add(roofM);
+  const cityDetailM = new THREE.Mesh(mergeGeometries(cityDetails), M.cityTrim); cityDetailM.name = 'Detalhes_edificios'; cityDetailM.castShadow = true; g.add(cityDetailM);
 
   // --- Vegetação ---
   const trunks = [], crowns = [], palmT = [], fronds = [];
@@ -783,31 +805,38 @@ export const RiverShader = {
     color: { value: null }, tDiffuse: { value: null }, textureMatrix: { value: null },
     time: { value: 0 }, distortion: { value: 0.035 }, reflectivity: { value: 1 }, body: { value: new THREE.Color(0.01, 0.015, 0.016) },
     lPos: { value: Array.from({ length: 16 }, () => new THREE.Vector3()) }, lDir: { value: Array.from({ length: 16 }, () => new THREE.Vector3(0, -1, 0)) },
-    lCol: { value: Array.from({ length: 16 }, () => new THREE.Vector3()) }, lCos: { value: new Array(16).fill(1) }, lN: { value: 0 }, albedo: { value: 0.06 },
+    lCol: { value: Array.from({ length: 16 }, () => new THREE.Vector3()) }, lCos: { value: new Array(16).fill(1) }, lN: { value: 0 }, albedo: { value: 0.02 },
   },
   vertexShader: `uniform mat4 textureMatrix; varying vec4 vUv; varying vec3 vWorld;
     void main(){ vUv = textureMatrix*vec4(position,1.0); vec4 w = modelMatrix*vec4(position,1.0); vWorld = w.xyz; gl_Position = projectionMatrix*viewMatrix*w; }`,
   fragmentShader: `uniform sampler2D tDiffuse; uniform float time, distortion, reflectivity, albedo; uniform vec3 body; varying vec4 vUv; varying vec3 vWorld;
     uniform vec3 lPos[16]; uniform vec3 lDir[16]; uniform vec3 lCol[16]; uniform float lCos[16]; uniform int lN;
+    float waveHeight(vec2 p){
+      float h = 0.0;
+      h += sin(dot(p, vec2(0.19, 0.57)) + time*0.34)*0.62;
+      h += sin(dot(p, vec2(-0.43, 0.31)) - time*0.27 + 1.7)*0.31;
+      h += sin(dot(p, vec2(0.92, 0.17)) + time*0.52 + 3.1)*0.15;
+      h += sin(dot(p, vec2(-1.33, 0.81)) - time*0.66 + 0.4)*0.07;
+      return h;
+    }
     vec2 waves(vec2 p){
-      vec2 n = vec2(0.0);
-      n += vec2(sin(p.x*0.35 + p.y*0.9 + time*0.9), cos(p.y*1.1 - p.x*0.2 - time*0.7))*0.45;
-      n += vec2(sin(p.x*1.7 - time*1.6 + p.y*2.3), cos(p.y*2.9 + p.x*0.6 + time*1.4))*0.3;
-      n += vec2(sin(p.x*5.3 + time*2.6 - p.y*3.1), cos(p.y*6.7 - time*2.2 + p.x*1.3))*0.16;
-      n += vec2(sin(p.x*13.0 - p.y*9.0 + time*3.4), cos(p.y*15.0 + p.x*7.0 - time*3.0))*0.09;
-      return n;
+      float e = 0.16, h = waveHeight(p);
+      return vec2(waveHeight(p + vec2(e,0.0)) - h, waveHeight(p + vec2(0.0,e)) - h) / e;
     }
     void main(){
       vec2 n = waves(vWorld.xz);
       float d = length(cameraPosition - vWorld);
-      float k = distortion / (1.0 + d*0.004);
-      vec4 uv = vUv; uv.x += n.x*k*0.25*uv.w; uv.y += n.y*k*uv.w;
-      // reflexo suavizado: 4 amostras alongadas na vertical (água nunca é espelho perfeito)
-      float bl = (0.004 + k * 0.08) * uv.w;
-      vec3 refl = 0.25 * (texture2DProj(tDiffuse, uv).rgb + texture2DProj(tDiffuse, uv + vec4(0.0, bl, 0.0, 0.0)).rgb
-                + texture2DProj(tDiffuse, uv - vec4(0.0, bl, 0.0, 0.0)).rgb + texture2DProj(tDiffuse, uv + vec4(0.0, 2.0 * bl, 0.0, 0.0)).rgb);
+      float k = distortion / (1.0 + d*0.006);
+      vec4 uv = vUv; uv.x += n.x*k*0.10*uv.w; uv.y += n.y*k*0.34*uv.w;
+      // amostragem elíptica: dissolve fragmentos sem transformar cada reflexo em uma faixa vertical.
+      float bl = (0.0014 + k*0.034)*uv.w, bx = bl*0.42;
+      vec3 refl = texture2DProj(tDiffuse, uv).rgb*0.30
+                + (texture2DProj(tDiffuse, uv + vec4(0.0, bl, 0.0, 0.0)).rgb + texture2DProj(tDiffuse, uv - vec4(0.0, bl, 0.0, 0.0)).rgb)*0.14
+                + (texture2DProj(tDiffuse, uv + vec4(0.0, 3.0*bl, 0.0, 0.0)).rgb + texture2DProj(tDiffuse, uv - vec4(0.0, 3.0*bl, 0.0, 0.0)).rgb)*0.09
+                + (texture2DProj(tDiffuse, uv + vec4(0.0, 7.0*bl, 0.0, 0.0)).rgb + texture2DProj(tDiffuse, uv - vec4(0.0, 7.0*bl, 0.0, 0.0)).rgb)*0.055
+                + (texture2DProj(tDiffuse, uv + vec4(bx, 0.0, 0.0, 0.0)).rgb + texture2DProj(tDiffuse, uv - vec4(bx, 0.0, 0.0, 0.0)).rgb)*0.065;
       vec3 V = normalize(cameraPosition - vWorld);
-      vec3 N = normalize(vec3(-n.x*0.12, 1.0, -n.y*0.12));
+      vec3 N = normalize(vec3(-n.x*0.18, 1.0, -n.y*0.18));
       float c = clamp(dot(V, N), 0.0, 1.0);
       float F = 0.02 + 0.98*pow(1.0 - c, 5.0);
       vec3 E = vec3(0.0);
@@ -817,7 +846,9 @@ export const RiverShader = {
         float cs = dot(-l, lDir[i]); float sp = smoothstep(lCos[i], mix(lCos[i], 1.0, 0.35), cs);
         E += lCol[i]*sp*max(l.y, 0.0)/d2;
       }
-      vec3 col = body*(1.0 - F) + E*albedo*(1.0 - F)/3.14159 + refl*(F*0.7 + 0.025)*reflectivity;
+      E = E/(1.0 + E*0.018);
+      float turbidity = 0.94 + 0.06*sin(dot(vWorld.xz, vec2(0.018,0.031)) + time*0.035);
+      vec3 col = body*turbidity*(1.0 - F) + E*albedo*(1.0 - F)/3.14159 + refl*(F*0.72 + 0.014)*reflectivity;
       gl_FragColor = vec4(col, 1.0);
     }`,
 };

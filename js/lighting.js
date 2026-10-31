@@ -6,11 +6,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { P, H, deckY, cableY, cablePolyline, polyTube, stairSteps } from './model.js';
-import { sampleI } from './photometry.js';
+import { sampleI, tiltFactor } from './photometry.js';
 
 /** Camadas: iluminação funcional (piso, circulação) × cênica (arquitetura, cor, efeitos). */
 export const LAYERS = { funcional: true, cenica: true };
-export const ROLE_DEFAULT = { cable: 'cenica', handrail: 'funcional', hangers: 'cenica', towerUp: 'cenica', towerTop: 'funcional', underDeck: 'cenica', quay: 'cenica', postFoot: 'funcional', stairs: 'funcional', custom: 'funcional' };
+export const ROLE_DEFAULT = { cable: 'cenica', handrail: 'funcional', hangers: 'cenica', towerUp: 'cenica', towerTop: 'funcional', underDeck: 'cenica', quay: 'cenica', postFoot: 'funcional', faceLight: 'funcional', stairs: 'funcional', custom: 'funcional' };
 export const roleOf = (g) => g.role || ROLE_DEFAULT[g.mount] || 'cenica';
 export const isOn = (g) => !!g.on && LAYERS[roleOf(g)] !== false;
 
@@ -129,6 +129,27 @@ export const MOUNTS = {
       return out;
     },
   },
+  faceLight: {
+    nome: 'Reconhecimento facial — luz longitudinal', icon: '⇆', types: ['bollard', 'washer', 'flood'],
+    params: [{ k: 'spacing', l: 'Espaçamento entre pares', min: 10, max: 30, step: 2, def: 20, u: 'm' }, { k: 'down', l: 'Inclinação para o piso', min: 5, max: 35, step: 1, def: 14, u: '°' }],
+    points: (g) => {
+      const out = [], a = g.params.down * Math.PI / 180;
+      const xs = [-H() + 1];
+      for (let x = -H() + 10; x <= H() - 10 + 1e-6; x += g.params.spacing) xs.push(x);
+      xs.push(H() - 1);
+      for (const x of [...new Set(xs.map(v => +v.toFixed(3)))]) {
+        for (const s of [-1, 1]) {
+          const dirX = s < 0 ? 1 : -1;
+          out.push({
+            p: V(x - dirX * 0.45, deckY(x) + 0.88, s * (P.railZ - 0.05)),
+            d: V(dirX * Math.cos(a), -Math.sin(a), -s * 0.22).normalize(),
+            s: x + H() + (s > 0 ? 0.5 : 0),
+          });
+        }
+      }
+      return out;
+    },
+  },
   stairs: {
     nome: 'Escadas das cabeceiras', icon: '⌐', types: ['bollard', 'strip'],
     params: [{ k: 'every', l: '1 balizador a cada N degraus', min: 1, max: 6, step: 1, def: 3, only: 'point' }],
@@ -192,6 +213,27 @@ export const candela = (g) => g.photo ? g.photo.Imax / (TYPES[g.type].linear ? p
 /** Luminância da superfície emissora (nits = cd/m²). */
 export const nitsOf = (g) => candela(g) / emitArea(g);
 export const powerForNits = (g, nits) => nits * solidAngleOf(g) * emitArea(g) / (efficacy(g) * g.dim / 100);
+
+const PHOTO_MAPS = new WeakMap();
+/** Cookie projetado no SpotLight para que a prévia siga a distribuição C/γ do IES/LDT. */
+function photometryMap(ph, rot = 0, halfDeg = 85) {
+  let maps = PHOTO_MAPS.get(ph); if (!maps) { maps = new Map(); PHOTO_MAPS.set(ph, maps); }
+  const key = `${rot}:${Math.round(halfDeg * 10)}`; if (maps.has(key)) return maps.get(key);
+  const N = 128, data = new Uint8Array(N * N * 4), tanHalf = Math.tan(halfDeg * Math.PI / 180);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const u = (x + 0.5) / N * 2 - 1, v = (y + 0.5) / N * 2 - 1, r = Math.hypot(u, v), k = (y * N + x) * 4;
+    let q = 0;
+    if (r <= 1) {
+      const gamma = Math.atan(r * tanHalf) * 180 / Math.PI;
+      const C = Math.atan2(v, u) * 180 / Math.PI + rot;
+      q = Math.min(1, sampleI(ph, C, gamma) / Math.max(ph.Imax, 1e-6));
+    }
+    const c = Math.round(q * 255); data[k] = data[k + 1] = data[k + 2] = c; data[k + 3] = 255;
+  }
+  const tex = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.generateMipmaps = false; tex.needsUpdate = true;
+  maps.set(key, tex); return tex;
+}
 
 // ---------------------------------------------------------------------
 //  Material emissor (fitas e lentes) com efeitos dinâmicos
@@ -275,7 +317,7 @@ export class LightRig {
     const Y = Math.max(luminanceY(col), 0.03);
     const cNorm = col.clone().multiplyScalar(1 / Y);
     const flux = fluxUnit(g), I0 = candela(g), half = beamOf(g) * Math.PI / 360;
-    const ph = g.photo || null, phScale = ph ? (g.dim / 100) * (T.linear ? 0.5 / photoLen(g) : 1) : 0, phRot = g.photoRot ? 90 : 0;
+    const ph = g.photo || null, phBaseScale = ph ? (g.dim / 100) * (T.linear ? 0.5 / photoLen(g) : 1) : 0, phRot = g.photoRot ? 90 : 0;
     const nits = nitsOf(g);
     const emitCol = cNorm.clone().multiplyScalar(Math.min(nits, 60000));
     ['r', 'g', 'b'].forEach(k => { emitCol[k] = Math.min(emitCol[k], 60000); });
@@ -299,7 +341,7 @@ export class LightRig {
         l._len = len; l._pts = pts; l._base = base; offset += len; rt.length += len;
         // elementos para cálculo: 0,5 m
         const sm = sampleLine(pts, 0.5);
-        sm.forEach((o, i) => { const a = sm[Math.max(0, i - 1)].p, b = sm[Math.min(sm.length - 1, i + 1)].p; const t = b.clone().sub(a); if (t.lengthSq() < 1e-8) t.copy(pts[pts.length - 1]).sub(pts[0]); t.normalize(); rt.elems.push({ p: o.p, d: l.dir, I: I0 * 0.5, half, t, c: cNorm, ph, phScale, phRot, r: refAxis(l.dir, t) }); });
+        sm.forEach((o, i) => { const a = sm[Math.max(0, i - 1)].p, b = sm[Math.min(sm.length - 1, i + 1)].p; const t = b.clone().sub(a); if (t.lengthSq() < 1e-8) t.copy(pts[pts.length - 1]).sub(pts[0]); t.normalize(); const phScale = phBaseScale * tiltFactor(ph, Math.acos(Math.max(-1, Math.min(1, -l.dir.y))) * 180 / Math.PI); rt.elems.push({ p: o.p, d: l.dir, I: I0 * 0.5, half, t, c: cNorm, ph, phScale, phRot, r: refAxis(l.dir, t) }); });
       });
       if (geos.length) { const m = new THREE.Mesh(mergeGeometries(geos), emat); m.name = 'Emissor_linear'; obj.add(m); }
       rt.count = lines.length;
@@ -309,7 +351,7 @@ export class LightRig {
       for (let i = 0; i < nLights; i++) {
         const target = (i + 0.5) * total / nLights; let acc = 0;
         for (const l of lines) {
-          if (target <= acc + l._len) { const loc = locate(l._pts, target - acc); this.addLight(rt, obj, loc, l.dir, per, g, colS, cNorm, l._base + (target - acc), Math.max(beamOf(g), 100)); break; }
+          if (target <= acc + l._len) { const loc = locate(l._pts, target - acc); this.addLight(rt, obj, loc, l.dir, per, g, colS, cNorm, l._base + (target - acc), Math.max(beamOf(g), 100), refAxis(l.dir, V(1, 0, 0))); break; }
           acc += l._len;
         }
       }
@@ -326,26 +368,31 @@ export class LightRig {
         lens.geometry.setAttribute('aS', new THREE.InstancedBufferAttribute(aS, 1));
         body.castShadow = false; body.name = 'Corpo_luminaria'; lens.name = 'Lente';
         obj.add(body, lens);
-        pts.forEach(f => rt.elems.push({ p: f.p, d: f.d, I: I0, half, c: cNorm, ph, phScale, phRot, r: refAxis(f.d, null) }));
+        pts.forEach(f => { const phScale = phBaseScale * tiltFactor(ph, Math.acos(Math.max(-1, Math.min(1, -f.d.y))) * 180 / Math.PI); rt.elems.push({ p: f.p, d: f.d, I: I0, half, c: cNorm, ph, phScale, phRot, r: refAxis(f.d, null) }); });
         // agrega luminárias em nL luzes
         const n = Math.min(nL, pts.length), chunk = pts.length / n;
         for (let i = 0; i < n; i++) {
           const a = Math.floor(i * chunk), b = Math.floor((i + 1) * chunk), sub = pts.slice(a, b);
           const p = V(0, 0, 0), d = V(0, 0, 0); sub.forEach(f => { p.add(f.p); d.add(f.d); });
           p.multiplyScalar(1 / sub.length); d.normalize();
-          this.addLight(rt, obj, p.add(d.clone().multiplyScalar(0.05)), d, flux * sub.length, g, colS, cNorm, sub[Math.floor(sub.length / 2)].s ?? i);
+          this.addLight(rt, obj, p.add(d.clone().multiplyScalar(0.05)), d, flux * sub.length, g, colS, cNorm, sub[Math.floor(sub.length / 2)].s ?? i, null, refAxis(d, null));
         }
       }
     }
     return rt;
   }
-  addLight(rt, obj, p, d, fluxTotal, g, colS, cNorm, s, beamOverride) {
-    const beam = beamOverride || beamOf(g), I = fluxTotal / solidAngle(beam);
-    const L = new THREE.SpotLight(0xffffff, I, 0, Math.min(beam * Math.PI / 360 * 1.15, Math.PI / 2 * 0.98), 0.45, 2);
+  addLight(rt, obj, p, d, fluxTotal, g, colS, cNorm, s, beamOverride, rAxis) {
+    const ph = g.photo || null, count = fluxTotal / Math.max(fluxUnit(g), 1e-6);
+    const field = ph ? Math.max(ph.beam || 4, ph.field || ph.beam || 4) : (beamOverride || beamOf(g));
+    const halfDeg = Math.min(89, field * 0.5 * (ph ? 1.02 : 1.15));
+    const tilt = Math.acos(Math.max(-1, Math.min(1, -d.y))) * 180 / Math.PI;
+    const I = ph ? candela(g) * count * tiltFactor(ph, tilt) : fluxTotal / solidAngle(field);
+    const L = new THREE.SpotLight(0xffffff, I, 0, halfDeg * Math.PI / 180, ph ? 0.02 : 0.45, 2);
     L.color.copy(cNorm);
+    if (ph) { L.map = photometryMap(ph, g.photoRot ? 90 : 0, halfDeg); L.up.copy(rAxis || refAxis(d, null)); }
     L.position.copy(p); L.target.position.copy(p).add(d.clone().multiplyScalar(5));
     obj.add(L, L.target);
-    rt.lights.push({ light: L, I, s, base: cNorm.clone() });
+    rt.lights.push({ light: L, I, s, base: cNorm.clone(), ph, field });
   }
   applyShadows() {
     let used = 0;
