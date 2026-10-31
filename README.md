@@ -37,6 +37,14 @@ O tour completo dura aproximadamente 45–60 segundos, dependendo do número de 
 - **Editor de luminárias**: crie grupos avulsos, clique para fixar na superfície (chão, fachada, ponte, árvore), clique para mirar, selecione clicando na luminária, mova com setas, ajuste giro/inclinação, duplique e exclua. "Editar individualmente" separa qualquer grupo em luminárias avulsas.
 - Navegação mais precisa (sensibilidade ajustável) e câmera impedida de descer abaixo do chão.
 
+## Vídeo, LEDs atuais e desempenho (v6)
+
+- **Vídeo do tour** (aba Arquivo): renderizado quadro a quadro com WebCodecs e montado em MP4 (H.264) com [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) (MIT, em `vendor/mp4-muxer`). Sai a 60 ou 30 qps em 1080p sem engasgos, mesmo em PC lento — só demora mais para gerar. A câmera visita cada grupo de luz ligado, com destaque no ponto iluminado.
+- **Cena "Situação atual"** refeita pelas fotos: mangueira azul sobre os cabos e **sobre o corrimão** (nova opção "Posição da fita"), torres lavadas de azul e pontos brancos baixos no tabuleiro.
+- Removida a montagem "sob o tabuleiro" (não será implementada); projetos salvos com ela são carregados sem esse grupo.
+- Letreiro #EUPASSODETORRES ao lado da ponte, sobre canteiro de grama, de frente para a praça (SC).
+- Desempenho: número fixo de luzes no shader (ligar/desligar grupos não recompila mais os materiais), resolução reduzida só enquanto a câmera é arrastada, cálculo de lux em etapas.
+
 ## Rodar localmente
 Qualquer servidor estático serve (o three.js está em `vendor/`, sem build):
 ```

@@ -37,7 +37,6 @@ function baseGroups() {
     G({ name: 'Pixels nos pendurais', mount: 'hangers', type: 'dot', beam: 120, power: 2, nLights: 6 }),
     G({ name: 'Projetores nas torres', mount: 'towerUp', type: 'flood', beam: 25, power: 12, nLights: 8 }),
     G({ name: 'Washers no pórtico', mount: 'towerTop', type: 'washer', beam: 45, power: 10, nLights: 4 }),
-    G({ name: 'Washers sob o tabuleiro', mount: 'underDeck', type: 'washer', beam: 30, power: 8, nLights: 6 }),
     G({ name: 'Projetores no cais', mount: 'quay', type: 'flood', beam: 10, power: 30, nLights: 4 }),
     G({ name: 'Balizadores no rodapé', mount: 'postFoot', type: 'bollard', beam: 60, power: 2, nLights: 6 }),
     G({ name: 'Luz longitudinal para reconhecimento', mount: 'faceLight', type: 'bollard', beam: 60, power: 2, nLights: 6 }),
@@ -59,14 +58,17 @@ const PRESETS = {
     towerUp: { on: true, colorMode: 'cct', cct: 3000, power: 8, beam: 25 },
     towerTop: { on: true, colorMode: 'cct', cct: 3000, power: 6, beam: 45 },
     faceLight: { on: true, colorMode: 'cct', cct: 2700, power: 2, beam: 60, dim: 80, params: { spacing: 10, down: 12 } },
-    underDeck: { on: true, colorMode: 'rgb', rgb: '#7fb2e6', power: 3, beam: 30, params: { spacing: 8 } },
     stairs: { on: true, colorMode: 'cct', cct: 3000, power: 2 },
     proj10: { on: true },
   } },
-  atual: { nome: 'Situação atual (fotos 2024–25): cabos azuis', patch: {
-    cable: { on: true, colorMode: 'rgb', rgb: '#1f2fff', power: 1.0 },
-    handrail: { on: true, colorMode: 'cct', cct: 5000, power: 0.15, beam: 60 },
+  atual: { nome: 'Situação atual (fotos 2024–25): cabos e corrimão azuis', patch: {
+    // fotos noturnas: fita azul sobre os cabos principais e sobre o corrimão, torres lavadas de azul,
+    // pontos brancos baixos ao longo do tabuleiro
+    // mangueira emite em volta do cabo: pouca luz chega ao piso (nas fotos o tabuleiro fica escuro, só os cabos brilham)
+    cable: { on: true, type: 'strip', colorMode: 'rgb', rgb: '#1f2fff', power: 0.35, beam: 160 },
+    handrail: { on: true, type: 'strip', colorMode: 'rgb', rgb: '#1f2fff', power: 0.4, beam: 120, params: { pos: 'sobre' } },
     towerUp: { on: true, colorMode: 'rgb', rgb: '#2436ff', power: 10, beam: 10 },
+    postFoot: { on: true, colorMode: 'cct', cct: 6000, power: 1, beam: 60, params: { every: 3 } },
   } },
   funcional: { nome: 'Funcional — branco quente 3000 K', patch: {
     handrail: { on: true, colorMode: 'cct', cct: 3000, power: 0.15, beam: 40 },
@@ -77,7 +79,6 @@ const PRESETS = {
   festiva: { nome: 'Festiva — RGB dinâmico', patch: {
     cable: { on: true, colorMode: 'rgb', rgb: '#ff2fd0', power: 1.5, effect: 'arcoiris', speed: 0.25, lambda: 24 },
     hangers: { on: true, colorMode: 'rgb', rgb: '#ffffff', power: 1.5, effect: 'corrida', speed: 0.5, lambda: 30 },
-    underDeck: { on: true, colorMode: 'rgb', rgb: '#7a2cff', power: 10, effect: 'onda', speed: 0.3, lambda: 20 },
     towerUp: { on: true, colorMode: 'rgb', rgb: '#ff2fa0', power: 15, beam: 25, effect: 'respira', speed: 0.3 },
     handrail: { on: true, colorMode: 'cct', cct: 3000, power: 0.1, beam: 40 },
   } },
@@ -100,7 +101,7 @@ const S = {
 };
 try {
   const saved = JSON.parse(localStorage.getItem('ponte-pensil-v4') || 'null');
-  if (saved && saved.groups) { Object.assign(S, saved, { groups: migrate(saved.groups.map(g => G({ ...g, id: undefined })), saved.preset) }); }
+  if (saved && saved.groups) { Object.assign(S, saved, { groups: migrate(saved.groups.filter(g => MOUNTS[g.mount]).map(g => G({ ...g, id: undefined })), saved.preset) }); }
 } catch (e) { /* armazenamento indisponível */ }
 /** Projetos antigos: identifica o grupo avulso original e acrescenta o grupo de projetores 10 W. */
 function migrate(gs, preset = S.preset) {
@@ -158,7 +159,7 @@ water.rotation.x = -Math.PI / 2; water.name = 'Rio_Mampituba'; scene.add(water);
 // reflexo: some com o que não aparece na água; parado, atualiza só 1 quadro a cada 3
 const reflHide = [];
 { const ob = water.onBeforeRender.bind(water); water.onBeforeRender = (...a) => {
-  if ((perf.idle && perf.frame % 3 !== 0) || (S.quality === 'leve' && perf.frame % 2 !== 0)) return;
+  if ((perf.idle && perf.frame % 3 !== 0) || ((S.quality === 'leve' || perf.moving) && perf.frame % 2 !== 0)) return;
   const vis = reflHide.map(o => o.visible); reflHide.forEach(o => { o.visible = false; });
   ob(...a); reflHide.forEach((o, i) => { o.visible = vis[i]; });
 }; }
@@ -339,21 +340,28 @@ function allocate() {
   return out;
 }
 function applyAlloc() { const a = allocate(); let changed = false; S.groups.forEach(g => { const n = a.get(g.id) ?? g.nLights; if (g._alloc !== n) { changed = true; g._alloc = n; } }); return changed; }
-function rebuildAll() { applyAlloc(); rig.shadows = S.shadows && S.quality !== 'leve'; rig.rebuildAll(S.groups); shadowsDirty(); scheduleCalc(); }
+function rebuildAll() { applyAlloc(); rig.shadows = S.shadows && S.quality !== 'leve'; rig.rebuildAll(S.groups); rig.pad(QUALITY[S.quality].lights + 6); shadowsDirty(); scheduleCalc(); }
 const pendingBuild = new Set();
 function rebuildGroup(g) { pendingBuild.add(g); requestAnimationFrame(flushBuild); }
 function flushBuild() {
   if (!pendingBuild.size) return;
   if (applyAlloc()) rig.rebuildAll(S.groups);
   else pendingBuild.forEach(g => rig.build(g));
-  pendingBuild.clear(); rig.applyShadows(); shadowsDirty(); scheduleCalc(); persist();
+  pendingBuild.clear(); rig.pad(QUALITY[S.quality].lights + 6); rig.applyShadows(); shadowsDirty(); scheduleCalc(); persist();
 }
-const scheduleCalc = debounce(runCalc, 180);
+const scheduleCalc = debounce(() => runCalc(), 350);
 let calcF = null, calcV = null;
-function runCalc() {
-  lastCalc = computeGrid(rig, S.groups);                                  // total (funcional + cênica): mapa e piso 3D
-  calcF = computeGrid(rig, S.groups, { roles: ['funcional'] });           // só funcional: avaliação normativa
-  calcV = computeVertical(rig, S.groups, { roles: ['funcional'] });       // vertical a 1,50 m
+let calcSeq = 0;
+const idle = () => new Promise(r => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 120 }) : setTimeout(r, 16)));
+async function runCalc() {
+  // três passadas em quadros separados: a tela não congela enquanto o lux é recalculado
+  const seq = ++calcSeq;
+  const tot = computeGrid(rig, S.groups);                                  // total (funcional + cênica): mapa e piso 3D
+  await idle(); if (seq !== calcSeq) return;
+  const f = computeGrid(rig, S.groups, { roles: ['funcional'] });         // só funcional: avaliação normativa
+  await idle(); if (seq !== calcSeq) return;
+  const v = computeVertical(rig, S.groups, { roles: ['funcional'] });     // vertical a 1,50 m
+  lastCalc = tot; calcF = f; calcV = v;
   const src = S.heatSrc === 'funcional' ? calcF : lastCalc;
   const { nx, nz } = lastCalc;
   for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
@@ -437,7 +445,7 @@ const VIEWS = [
   ['Praça RS', [-68, P.ground + 1.7, 10], [-30, 9, 0]],
   ['Sob a ponte', [6, 1.1, 9], [-2, 5.6, -3]],
   ['Ponte de concreto', [-205, 14, -300], [-300, 5, -392]],
-  ['Letreiro SC', [H() + 22, P.ground + 1.7, -9], [H() + 8.8, P.ground + 1.2, -4.5]],
+  ['Letreiro SC', [H() + 1.5, P.ground + 1.7, -24], [H() + 2.5, P.ground + 4.5, -3]],
   ['Rua (SC)', [H() + 40, P.ground + 1.65, 30], [H(), 9, 0]],
   ['Drone', [60, 90, 75], [0, 4, 0]],
 ];
@@ -850,7 +858,11 @@ function renderFilePane() {
   const videoFormat = el('select', { id: 'videoFormat', 'aria-label': 'Formato do vídeo' },
     el('option', { value: 'vertical' }, 'Celular vertical — 1080 × 1920'),
     el('option', { value: 'landscape' }, 'Paisagem — 1920 × 1080'));
-  const recordButton = el('button', { class: 'btn primary', type: 'button', onclick: () => startTourRecording(videoFormat.value) }, 'Gravar tour 360°');
+  const videoFps = el('select', { id: 'videoFps', 'aria-label': 'Quadros por segundo' },
+    el('option', { value: '60' }, '60 qps — mais suave'), el('option', { value: '30' }, '30 qps — gera em metade do tempo'));
+  const videoQ = el('select', { id: 'videoQ', 'aria-label': 'Qualidade de renderização do vídeo' },
+    el('option', { value: 'media' }, 'Render Média (recomendado)'), el('option', { value: 'alta' }, 'Render Alta (mais luzes, mais lento)'));
+  const recordButton = el('button', { class: 'btn primary', type: 'button', onclick: () => startTourRecording(videoFormat.value, +videoFps.value, videoQ.value) }, 'Gerar vídeo do tour');
   if (!tourRecorder?.supported()) { recordButton.disabled = true; recordButton.title = 'Use Chrome ou Edge atualizado no computador'; }
   p.append(
     el('h3', {}, 'Modelo 3D'),
@@ -866,8 +878,8 @@ function renderFilePane() {
     el('h3', {}, 'Imagem'),
     el('div', { class: 'btns' }, el('button', { class: 'btn', type: 'button', onclick: screenshot }, 'Capturar vista atual (.png)')),
     el('h3', {}, 'Vídeo 360°'),
-    el('div', { class: 'pair' }, videoFormat, recordButton),
-    el('p', { class: 'note' }, 'Grava no computador um tour automático da ponte e aproxima a câmera de todos os grupos de luz ativos. O vídeo inclui nome, função e especificação de cada foco. MP4 quando o navegador aceitar H.264; caso contrário, WebM.'),
+    el('div', { class: 'pair' }, videoFormat, videoFps), el('div', { class: 'pair' }, videoQ, recordButton),
+    el('p', { class: 'note' }, 'O vídeo é renderizado quadro a quadro (não em tempo real): sai liso a 60 ou 30 qps em 1080p, mesmo num PC lento — só demora mais para gerar. A câmera passa por todos os grupos de luz ligados, com destaque no ponto iluminado, nome e especificação de cada um. Arquivo MP4 (H.264). Use Chrome ou Edge no computador.'),
     el('h3', {}, 'Documentação'),
     el('p', { class: 'note', html: '<a href="guia.html" style="color:var(--led)">Memorial técnico de modelagem</a>: geometria, coordenadas, catenária, pendurais, tabuleiro, guarda-corpo, Geometry Nodes/Grasshopper, materiais e câmera.<br><a href="blender/ponte_pensil_blender.py" download style="color:var(--led)">ponte_pensil_blender.py</a>: gera a ponte paramétrica dentro do Blender (Scripting › Run Script).' }),
     el('h3', {}, 'Restaurar'),
@@ -876,7 +888,7 @@ function renderFilePane() {
 }
 function loadProject(d) {
   if (!d || !Array.isArray(d.groups)) throw new Error('formato');
-  const { groups, ...rest } = d; Object.assign(S, rest); S.groups = migrate(groups.map(g => G({ ...g, id: undefined })));
+  const { groups, ...rest } = d; Object.assign(S, rest); S.groups = migrate(groups.filter(g => MOUNTS[g.mount]).map(g => G({ ...g, id: undefined })));
   rig.haze.value = hazeSigma(S.haze ?? 0.45); selectFixture(null);
   if (!Array.isArray(S.criteria)) S.criteria = CRITERIA_REF.map(c => ({ ...c })); Object.assign(LAYERS, S.layers || {});
   applyMode(); people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
@@ -931,9 +943,10 @@ function recordingGroups() {
     };
   });
 }
-function startTourRecording(format) {
+function startTourRecording(format, fps = 60, quality = 'media') {
+  recQuality = quality;
   if (S.mode === 'dia') toast('Dica: o tour fica mais expressivo em Noite ou Hora azul.', 5000);
-  tween = null; tourRecorder.start({ format, groups: recordingGroups() });
+  tween = null; tourRecorder.start({ format, fps, groups: recordingGroups() });
 }
 
 // --- Exportação GLB ---
@@ -1049,7 +1062,8 @@ function resize() {
   const fixed = tourRecorder?.size;
   const w = fixed?.width || stage.clientWidth, h = fixed?.height || stage.clientHeight; if (!w || !h) return;
   if (typeof poke === 'function') poke();
-  const dpr = fixed ? 1 : Math.max(0.5, Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr) * perf.scale); perf.dpr = dpr;
+  const mk = perf.moving ? { leve: 0.6, media: 0.7, alta: 0.8 }[S.quality] : 1;
+  const dpr = fixed ? 1 : Math.max(0.4, Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr) * perf.scale * mk); perf.dpr = dpr;
   renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
   composer.setPixelRatio(dpr); composer.setSize(w, h);
   labelRenderer.setSize(w, h);
@@ -1098,9 +1112,33 @@ function feedWaterLights() {
   WU.lN.value = n;
 }
 const clock = new THREE.Clock();
-const tourRecorder = createTourRecorder({ camera, controls, renderer, stage, resize, wake: poke, download, onMessage: toast });
+let recQuality = 'media', recSaved = null;
+const tourRecorder = createTourRecorder({ camera, controls, renderer, stage, resize, wake: poke, download, onMessage: toast,
+  // cada quadro do vídeo é desenhado no tempo do vídeo (efeitos DMX, água e fachos sincronizados)
+  renderAt: (t) => {
+    perf.idle = false; perf.moving = false; perf.frame++;
+    WU.time.value = t; rig.animate(S.groups, t); feedWaterLights();
+    perf.lodDirty = true; updateLOD();
+    composer.render();
+  },
+  onBegin: async () => {
+    recSaved = { quality: S.quality, scale: perf.scale, dims: dims.visible, heat: heat.mesh.visible };
+    dims.visible = false; heat.mesh.visible = false; selMarker.visible = false; gizmo.detach();
+    S.quality = recQuality; perf.scale = 1; applyQuality(); rebuildAll();
+    await new Promise(r => setTimeout(r, 50));
+  },
+  onEnd: () => {
+    if (!recSaved) return;
+    S.quality = recSaved.quality; perf.scale = recSaved.scale; dims.visible = recSaved.dims; heat.mesh.visible = recSaved.heat;
+    applyQuality(); rebuildAll(); recSaved = null;
+  },
+});
 // interação: qualquer gesto ou ajuste devolve a taxa máxima de quadros
 controls.addEventListener('change', () => { poke(); perf.lodDirty = true; });
+// enquanto arrasta a câmera: resolução reduzida e reflexo a cada 2 quadros; ao soltar, volta tudo
+let moveEnd = 0;
+controls.addEventListener('start', () => { clearTimeout(moveEnd); if (!perf.moving) { perf.moving = true; resize(); } });
+controls.addEventListener('end', () => { clearTimeout(moveEnd); moveEnd = setTimeout(() => { perf.moving = false; resize(); poke(); }, 220); });
 ['pointerdown', 'wheel', 'input', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, poke, { passive: true }));
 // medidor de FPS (quadros realmente desenhados enquanto há movimento)
 const GPU_NAME = (() => { try { const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info'); return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL).replace(/^ANGLE \(|\)$/g, '').split(',').slice(0, 2).join(',') : ''; } catch (e) { return ''; } })();
@@ -1113,6 +1151,7 @@ const hasEffects = () => S.groups.some(g => isOn(g) && g.effect !== 'estatico');
 function scheduleFrame() { if (!perf.raf && !document.hidden) perf.raf = requestAnimationFrame(frame); }
 function frame(now) {
   perf.raf = 0;
+  if (tourRecorder.active) return; // o gravador desenha os quadros ele mesmo
   perf.idle = !tourRecorder.active && !tween && now - perf.lastInput > 2500;
   // parada de verdade: sem efeitos nem água animada, nada é redesenhado (economiza bateria)
   if (perf.idle && now - perf.lastInput > 4000 && !S.waterAnim && !hasEffects()) { perf.frozen = true; return; }
@@ -1131,13 +1170,12 @@ function frame(now) {
     perf.acc = 0; perf.n = 0; perf.checkAt = now + 1500;
   }
   const t = clock.getElapsedTime();
-  if (tourRecorder.active) tourRecorder.update(now);
-  else if (tween) {
+  if (tween) {
     const k = Math.min(1, (performance.now() - tween.s) / tween.d), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
     camera.position.lerpVectors(tween.p0, tween.p1, e); controls.target.lerpVectors(tween.t0, tween.t1, e);
     if (k >= 1) tween = null;
   }
-  if (!tourRecorder.active) controls.update();
+  controls.update();
   { const cp = camera.position, gmin = groundAt(cp.x, cp.z) + (Math.abs(cp.x) > P.quayX - 0.2 ? 0.5 : 0.35);
     if (cp.y < gmin) cp.y = gmin;
     const tg = controls.target, tmin = groundAt(tg.x, tg.z) + 0.05; if (tg.y < tmin) tg.y = tmin; }
@@ -1145,7 +1183,6 @@ function frame(now) {
   rig.animate(S.groups, t);
   feedWaterLights();
   composer.render(); tickFps(now);
-  tourRecorder.capture(now);
   if (dims.visible) labelRenderer.render(scene, camera);
   if (perf.lodDirty !== false) updateLOD();
   scheduleFrame();
@@ -1185,5 +1222,5 @@ applySensitivity(); applyMode(); applyQuality(); rebuildAll(); gizmoTone();
 renderScenePane(); renderLightPane(); renderFilePane();
 try { const tab = localStorage.getItem('ponte-pensil-tab'); if (tab) document.querySelector(`.tabs button[data-tab="${tab}"]`)?.click(); } catch (e) { /* ignora */ }
 if (window.innerWidth <= 820) { $('#panel').classList.add('min'); $('#sheetToggle').textContent = '▴'; }
-window.__ponte = { env, sel: () => sel, selectFixture, attachGizmo, perf, applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
+window.__ponte = { env, rec: (o) => { recQuality = o.quality || 'leve'; return tourRecorder.start({ groups: recordingGroups(), ...o }); }, recActive: () => tourRecorder.active, sel: () => sel, selectFixture, attachGizmo, perf, applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
 scheduleFrame();

@@ -455,7 +455,8 @@ export async function buildRealEnvironment(M, base = 'data/') {
     const pz = new Acc();
     for (const s of [-1, 1]) {
       const x0 = s * (P.L / 2 - 1.5), x1 = s * (P.L / 2 + P.anchorDist + 2);
-      capInto(pz, [[[Math.min(x0, x1), -6.5], [Math.max(x0, x1), -6.5], [Math.max(x0, x1), 6.5], [Math.min(x0, x1), 6.5]]], G + 0.04, 2);
+      const z0 = s > 0 ? -10 : -6.5; // SC: a praça avança para o lado do canteiro do letreiro
+      capInto(pz, [[[Math.min(x0, x1), z0], [Math.max(x0, x1), z0], [Math.max(x0, x1), 6.5], [Math.min(x0, x1), 6.5]]], G + 0.04, 2);
     }
     const pzm = new THREE.Mesh(pz.geo(), mats.pavers); pzm.name = 'Praca'; pzm.receiveShadow = true; pzm.renderOrder = -2; g.add(pzm); pick.push(pzm); reflHide.push(pzm);
   }
@@ -661,7 +662,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
       }
     }
     // praças da ponte: postes junto às escadas (posições estimadas)
-    for (const s of [-1, 1]) for (const z of [-5.5, 5.5]) { const x = s * (P.L / 2 + 4); poles.push([V(x, G, z), V(x, G + 6, z)]); arms.push([V(x, G + 5.7, z), V(x, G + 6, z - Math.sign(z) * 0.9)]); heads.push(V(x, G + 5.95, z - Math.sign(z) * 0.9)); lampPos.push(V(x, G + 5.85, z - Math.sign(z) * 0.9)); }
+    for (const s of [-1, 1]) for (const z of [-5.5, 5.5]) { const x = s * (P.L / 2 + 9); poles.push([V(x, G, z), V(x, G + 6, z)]); arms.push([V(x, G + 5.7, z), V(x, G + 6, z - Math.sign(z) * 0.9)]); heads.push(V(x, G + 5.95, z - Math.sign(z) * 0.9)); lampPos.push(V(x, G + 5.85, z - Math.sign(z) * 0.9)); }
     const pm = cylSegs(poles, 0.11, M.concreteGrey, 'Postes', 7); g.add(pm);
     const am = cylSegs(arms, 0.045, M.pole, 'Bracos_postes', 5); g.add(am);
     const hm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.62, 0.12, 0.3), M.lampHead, heads.length);
@@ -830,10 +831,18 @@ export async function buildRealEnvironment(M, base = 'data/') {
     const m1 = new THREE.Mesh(l1, white); m1.position.set(x0 + hw + gap - l1.boundingBox.min.x, 0.18 + 0.72, 0);
     const m2 = new THREE.Mesh(l2, white); m2.position.set(x0 + hw + gap - l2.boundingBox.min.x, 0.18 + 0.08, 0);
     const bm = box(total + 0.4, 0.18, 0.5, 0, 0.09, 0.05, base, 'Base_letreiro');
-    eu.add(hm, m1, m2, bm);
+    // canteiro baixo de grama com meio-fio de concreto, na frente do letreiro (foto)
+    const cw = total + 1.2, cd = 2.0, ch = 0.32;
+    const curb = new THREE.Group(); curb.position.y = -ch;
+    const zc = cd / 2 - 0.35; // grama na frente do letreiro (z local positivo = lado da praça)
+    curb.add(box(cw, ch, 0.15, 0, ch / 2, zc + cd / 2 - 0.075, base, 'Meio_fio'), box(cw, ch, 0.15, 0, ch / 2, zc - cd / 2 + 0.075, base, 'Meio_fio'),
+      box(0.15, ch, cd, -cw / 2 + 0.075, ch / 2, zc, base, 'Meio_fio'), box(0.15, ch, cd, cw / 2 - 0.075, ch / 2, zc, base, 'Meio_fio'));
+    const lawn = new THREE.Mesh(new THREE.PlaneGeometry(cw - 0.3, cd - 0.3).rotateX(-Math.PI / 2), mats.lawn); lawn.position.set(0, ch - 0.03, zc); lawn.receiveShadow = true; curb.add(lawn);
+    eu.add(hm, m1, m2, bm, curb);
     eu.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     // ao lado do pé da escada de SC, de frente para a cidade (+x); posição estimada pelas fotos
-    eu.position.set(P.L / 2 + P.landing + 7.4, G + 0.04, -4.5); eu.rotation.y = Math.PI / 2; // fora do chumbador do estai (z = −2,4)
+    // ao lado da ponte, deslocado lateralmente do eixo (foto): entre a torre e o pé da escada, de frente para a praça
+    eu.position.set(P.L / 2 + 3.6, G + 0.04 + 0.32, -5.6); eu.rotation.y = Math.PI;
     g.add(eu); pick.push(eu);
     eu.userData.mats = [white, red];
   }

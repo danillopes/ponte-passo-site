@@ -10,7 +10,7 @@ import { sampleI, tiltFactor } from './photometry.js';
 
 /** Camadas: iluminação funcional (piso, circulação) × cênica (arquitetura, cor, efeitos). */
 export const LAYERS = { funcional: true, cenica: true };
-export const ROLE_DEFAULT = { cable: 'cenica', handrail: 'funcional', hangers: 'cenica', towerUp: 'cenica', towerTop: 'funcional', underDeck: 'cenica', quay: 'cenica', postFoot: 'funcional', faceLight: 'funcional', stairs: 'funcional', custom: 'funcional' };
+export const ROLE_DEFAULT = { cable: 'cenica', handrail: 'funcional', hangers: 'cenica', towerUp: 'cenica', towerTop: 'funcional', quay: 'cenica', postFoot: 'funcional', faceLight: 'funcional', stairs: 'funcional', custom: 'funcional' };
 export const roleOf = (g) => g.role || ROLE_DEFAULT[g.mount] || 'cenica';
 export const isOn = (g) => !!g.on && LAYERS[roleOf(g)] !== false;
 
@@ -77,10 +77,14 @@ export const MOUNTS = {
   },
   handrail: {
     nome: 'Corrimão (luz para o piso)', icon: '═', types: ['linearRail', 'strip'],
-    params: [{ k: 'tilt', l: 'Inclinação para o centro', min: 0, max: 60, step: 1, def: 25, u: '°' }],
+    params: [{ k: 'pos', l: 'Posição da fita', type: 'select', opts: [['sob', 'Sob o corrimão (luz no piso)'], ['sobre', 'Sobre o corrimão (linha visível, como hoje)']], def: 'sob' },
+      { k: 'tilt', l: 'Inclinação para o centro', min: 0, max: 60, step: 1, def: 25, u: '°' }],
     lines: (g) => [-1, 1].map(s => {
-      const pts = []; for (let x = -H() + 0.3; x <= H() - 0.3 + 1e-6; x += 1) pts.push(V(x, deckY(x) + P.railH - 0.04, s * (P.railZ - 0.035)));
-      const t = g.params.tilt * Math.PI / 180; return { pts, dir: V(0, -Math.cos(t), -s * Math.sin(t)) };
+      // "sobre": mangueira/fita presa no topo do corrimão, emitindo para cima e para fora (fotos 2024–25)
+      const top = g.params.pos === 'sobre', pts = [];
+      for (let x = -H() + 0.3; x <= H() - 0.3 + 1e-6; x += 1) pts.push(top ? V(x, deckY(x) + P.railH + 0.036, s * P.railZ) : V(x, deckY(x) + P.railH - 0.04, s * (P.railZ - 0.035)));
+      const t = g.params.tilt * Math.PI / 180;
+      return { pts, dir: top ? V(0, 0.55, s * 0.83).normalize() : V(0, -Math.cos(t), -s * Math.sin(t)) };
     }),
   },
   hangers: {
@@ -113,20 +117,6 @@ export const MOUNTS = {
       for (const s of [-1, 1]) for (const f of [-1, 1]) out.push({ p: V(s * H() + f * 0.42, P.towerTop - 1.15, 0), d: V(f * Math.sin(t), -Math.cos(t), 0), s: out.length });
       return out;
     },
-  },
-  underDeck: {
-    nome: 'Sob o tabuleiro (reflexo na água)', icon: '▽', types: ['washer', 'flood', 'strip', 'dot'],
-    params: [{ k: 'spacing', l: 'Espaçamento', min: 1, max: 12, step: 1, def: 4, u: 'm', only: 'point' }, { k: 'tilt', l: 'Inclinação para fora', min: 0, max: 80, step: 1, def: 15, u: '°' }],
-    points: (g) => {
-      const out = [], t = g.params.tilt * Math.PI / 180;
-      for (let x = -P.quayX + g.params.spacing / 2; x <= P.quayX; x += g.params.spacing)
-        for (const s of [-1, 1]) out.push({ p: V(x, deckY(x) - 0.42, s * 1.05), d: V(0, -Math.cos(t), s * Math.sin(t)), s: x + H() });
-      return out;
-    },
-    lines: (g) => [-1, 1].map(s => {
-      const pts = [], t = g.params.tilt * Math.PI / 180; for (let x = -P.quayX; x <= P.quayX + 1e-6; x += 1) pts.push(V(x, deckY(x) - 0.4, s * 1.24));
-      return { pts, dir: V(0, -Math.cos(t), s * Math.sin(t)) };
-    }),
   },
   quay: {
     nome: 'Cais — projetores mirando a ponte', icon: '◢', types: ['flood', 'spot', 'proj10'],
@@ -541,6 +531,18 @@ export class LightRig {
     L.position.copy(p); L.target.position.copy(p).add(d.clone().multiplyScalar(5));
     obj.add(L, L.target);
     rt.lights.push({ light: L, I, s, base: cNorm.clone(), ph, field });
+  }
+  /** Mantém sempre o mesmo número de luzes spot visíveis (completa com luzes apagadas):
+   *  mudar a contagem obriga a recompilar todos os materiais — é o que travava a edição. */
+  pad(target) {
+    if (!this.padRoot) { this.padRoot = new THREE.Group(); this.padRoot.name = 'Luzes_reserva'; this.root.parent.add(this.padRoot); this.padLights = []; }
+    let n = 0; for (const [, rt] of this.rt) if (rt.obj.visible) n += rt.lights.length;
+    const need = Math.max(0, target - n);
+    while (this.padLights.length < need) {
+      const L = new THREE.SpotLight(0x000000, 0, 1, 0.1, 0, 2); L.position.set(0, -500, 0); L.target.position.set(0, -501, 0);
+      this.padRoot.add(L, L.target); this.padLights.push(L);
+    }
+    this.padLights.forEach((L, i) => { L.visible = i < need; });
   }
   applyShadows() {
     let used = 0;
