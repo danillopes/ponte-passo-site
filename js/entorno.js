@@ -152,22 +152,28 @@ function fixUp(geo) { // garante normais para cima nas faixas (ordem dos vértic
 //  Materiais: recebem as luzes spot (LEDs) só perto da ponte
 // ---------------------------------------------------------------------
 /** Laço das luzes spot só para |xz| < R (luminárias avulsas iluminam fachadas e árvores próximas). */
-export function nearSpots(mat, key, R = 170) {
+export const TREE_FAR = { value: 350 };
+export function nearSpots(mat, key, R = 170, cullFar = false) {
   mat.onBeforeCompile = (sh) => {
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vNearXZ;')
+    if (cullFar) sh.uniforms.uTreeFar = TREE_FAR;
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec2 vNearXZ;' + (cullFar ? '\nuniform float uTreeFar;' : ''))
       .replace('#include <project_vertex>', `#include <project_vertex>
         { vec4 nw = vec4(transformed, 1.0);
         #ifdef USE_INSTANCING
           nw = instanceMatrix * nw;
         #endif
-          vNearXZ = (modelMatrix * nw).xz; }`);
+          vNearXZ = (modelMatrix * nw).xz; }
+        ${cullFar ? `#ifdef USE_INSTANCING
+          // árvore além do alcance da qualidade escolhida: descartada antes de gerar pixels
+          if (distance((modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz, cameraPosition) > uTreeFar) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        #endif` : ''}`);
     const chunk = THREE.ShaderChunk.lights_fragment_begin;
     const a = chunk.indexOf('#if ( NUM_SPOT_LIGHTS > 0 )'), b = chunk.indexOf('#if ( NUM_DIR_LIGHTS > 0 )');
     if (a < 0 || b < 0) return;
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec2 vNearXZ;')
       .replace('#include <lights_fragment_begin>', chunk.slice(0, a) + `if (dot(vNearXZ, vNearXZ) < ${(R * R).toFixed(1)}) {\n` + chunk.slice(a, b) + '\n}\n' + chunk.slice(b));
   };
-  mat.customProgramCacheKey = () => 'perto-' + key;
+  mat.customProgramCacheKey = () => 'perto-' + key + (cullFar ? '-longe' : '');
   return mat;
 }
 const offsetMat = (m, f) => { m.polygonOffset = true; m.polygonOffsetFactor = f; m.polygonOffsetUnits = f * 2; return m; };
@@ -299,12 +305,12 @@ function palmGeo(r, scale = 1) {
   const trunk = polyTube(pts, 0.15 * scale, 7);
   { const uvA = trunk.attributes.uv; for (let i = 0; i < uvA.count; i++) uvA.setY(i, uvA.getY(i)); }
   const top = pts[pts.length - 1], pos = [], nor = [], uv = [];
-  const nF = 13;
+  const nF = 11;
   for (let f = 0; f < nF; f++) {
     const az = f / nF * Math.PI * 2 + r() * 0.3, young = f % 5 === 0;
     const len = (young ? 2.4 : 3.2 + r() * 0.6) * scale, elev = young ? 1.0 : 0.35 + r() * 0.35, droop = young ? 0.4 : 1.6 + r() * 0.6;
     const dir = V(Math.cos(az), 0, Math.sin(az)), side = V(-dir.z, 0, dir.x);
-    const N = 7, rows = [];
+    const N = 5, rows = [];
     for (let i = 0; i <= N; i++) {
       const t = i / N, along = len * t;
       const c = top.clone().addScaledVector(dir, along * Math.cos(elev)).add(V(0, along * Math.sin(elev) - droop * t * t * len / 3, 0));
@@ -379,7 +385,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
   const nearRoad = (x, z, pad = 0) => roadSegs.some(([a, b, hw]) => segDist(x, z, a, b) < (WIDTH[hw] || 5) / 2 + pad);
 
   // ---------- terreno: quarteirões na cota da praça, muro de margem até o fundo ----------
-  const groundMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.ground, roughness: 1 }), 'terreno');
+  const groundMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.ground, roughness: 1 }), 'terreno', 140);
   const quayMat = M.concreteGrey;
   {
     const top = new Acc(), wall = new Acc();
@@ -401,9 +407,9 @@ export async function buildRealEnvironment(M, base = 'data/') {
         far.quad(A, Bv, B2, A2, up, [A[0] / 6, -A[2] / 6], [Bv[0] / 6, -Bv[2] / 6], [B2[0] / 6, -B2[2] / 6], [A2[0] / 6, -A2[2] / 6]);
       }
     }
-    const topM = new THREE.Mesh(top.geo(), groundMat); topM.name = 'Terreno_OSM'; topM.receiveShadow = true; g.add(topM); pick.push(topM);
+    const topM = new THREE.Mesh(top.geo(), groundMat); topM.name = 'Terreno_OSM'; topM.receiveShadow = true; g.add(topM); pick.push(topM); reflHide.push(topM);
     const wallM = new THREE.Mesh(wall.geo(), quayMat); wallM.name = 'Muro_margem'; wallM.receiveShadow = true; g.add(wallM); pick.push(wallM);
-    if (!far.empty) { const fg = fixUp(far.geo()); fg.computeVertexNormals(); const fm = new THREE.Mesh(fg, groundMat); fm.name = 'Terreno_distante'; g.add(fm); }
+    if (!far.empty) { const fg = fixUp(far.geo()); fg.computeVertexNormals(); const fm = new THREE.Mesh(fg, groundMat); fm.name = 'Terreno_distante'; g.add(fm); reflHide.push(fm); }
   }
 
   // ---------- praças, gramados, piscinas, estacionamentos, trapiches ----------
@@ -427,7 +433,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
       if (p.kind === 'bleachers') { capInto(acc.dirt, [ring], G + 0.6, 4); continue; }
       if (k) capInto(acc[k], [ring], G + (k === 'pool' ? 0.02 : 0.015), k === 'park' ? 7 : 4);
     }
-    for (const [k, a] of Object.entries(acc)) if (!a.empty) { const m = new THREE.Mesh(a.geo(), mats[k]); m.name = 'Area_' + k; m.receiveShadow = true; g.add(m); if (k === 'pool') m.userData.pool = true; }
+    for (const [k, a] of Object.entries(acc)) if (!a.empty) { const m = new THREE.Mesh(a.geo(), mats[k]); m.name = 'Area_' + k; m.receiveShadow = true; m.renderOrder = -1; g.add(m); reflHide.push(m); if (k === 'pool') m.userData.pool = true; }
     if (!pier.empty) { const m = new THREE.Mesh(mergeGeometries([pier.geo(), pierW.geo()]), M.wood); m.name = 'Trapiche'; m.castShadow = m.receiveShadow = true; g.add(m); pick.push(m); }
   }
 
@@ -443,7 +449,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
       if (rd.hw !== 'service') for (const s of [-1, 1]) ribbonInto(side, rd.pts, 2.2, G + 0.035, 2, 1.1, s * (w / 2 + 1.1));
     }
     for (const [a, m, n] of [[road, mats.road, 'Vias_asfalto'], [blocks, mats.blocks, 'Vias_lajota'], [side, mats.side, 'Calcadas']]) {
-      if (a.empty) continue; const mesh = new THREE.Mesh(fixUp(a.geo()), m); mesh.name = n; mesh.receiveShadow = true; g.add(mesh); pick.push(mesh);
+      if (a.empty) continue; const mesh = new THREE.Mesh(fixUp(a.geo()), m); mesh.name = n; mesh.receiveShadow = true; mesh.renderOrder = n === 'Calcadas' ? -2 : -3; g.add(mesh); pick.push(mesh); reflHide.push(mesh);
     }
     // ponto de chegada da ponte pênsil: piso de concreto/blocos ao pé das escadas
     const pz = new Acc();
@@ -451,7 +457,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
       const x0 = s * (P.L / 2 - 1.5), x1 = s * (P.L / 2 + P.anchorDist + 2);
       capInto(pz, [[[Math.min(x0, x1), -6.5], [Math.max(x0, x1), -6.5], [Math.max(x0, x1), 6.5], [Math.min(x0, x1), 6.5]]], G + 0.04, 2);
     }
-    const pzm = new THREE.Mesh(pz.geo(), mats.pavers); pzm.name = 'Praca'; pzm.receiveShadow = true; g.add(pzm); pick.push(pzm);
+    const pzm = new THREE.Mesh(pz.geo(), mats.pavers); pzm.name = 'Praca'; pzm.receiveShadow = true; pzm.renderOrder = -2; g.add(pzm); pick.push(pzm); reflHide.push(pzm);
   }
   // ponte José Mário Soares Noronha (rodoviária) — posição real; perfil e seção estimados
   {
@@ -588,6 +594,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
   const bld = new THREE.Group(); bld.name = 'Edificacoes_OSM';
   for (const [a, m, n] of [[walls.casa, facadeHouse, 'Casas'], [walls.apart, facadeApt, 'Predios'], [shopBand, shopMat, 'Comercios'], [roofsT, tileMat, 'Telhados'], [roofsF, slabMat, 'Lajes']]) {
     if (a.empty) continue; const mesh = new THREE.Mesh(a.geo(), m); mesh.name = n; mesh.castShadow = mesh.receiveShadow = true; bld.add(mesh); pick.push(mesh);
+    if (n === 'Telhados' || n === 'Lajes') reflHide.push(mesh); // de baixo d'água não se veem
   }
   g.add(bld); city.push(bld);
 
@@ -625,11 +632,11 @@ export async function buildRealEnvironment(M, base = 'data/') {
     signMat = nearSpots(new THREE.MeshStandardMaterial({ map, emissiveMap: emap, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.5 }), 'letreiros');
     const geo = acc.geo();
     // garante a frente para fora (normal da face = n)
-    const sm = new THREE.Mesh(geo, signMat); sm.name = 'Letreiros'; g.add(sm); city.push(sm);
+    const sm = new THREE.Mesh(geo, signMat); sm.name = 'Letreiros'; g.add(sm); city.push(sm); lods.push([sm, 260]);
   }
 
   // ---------- postes de iluminação pública ao longo das vias ----------
-  const lampPos = []; let poolMat = null;
+  const lampPos = []; let poolMat = null, poolsNear = null;
   {
     const poles = [], arms = [], heads = [];
     let flip = 1;
@@ -662,10 +669,18 @@ export async function buildRealEnvironment(M, base = 'data/') {
     hm.name = 'Luminarias_publicas'; g.add(hm);
     reflHide.push(pm, am); lods.push([pm, 520], [am, 380]);
     // poças de luz no piso dos postes que não têm luz dinâmica (L = E·ρ/π, E = I·h/d³)
-    const dyn = new Set([...lampPos].sort((p, q) => p.length() - q.length()).filter(p => p.length() < 95).slice(0, 8));
+    const near = [...lampPos].sort((p, q) => p.length() - q.length()).filter(p => p.length() < 95).slice(0, 8);
+    const dyn = new Set(near);
     const pools = lampPos.filter(p => !dyn.has(p));
+    // os postes 4–8 só têm luz dinâmica na qualidade Média/Alta; no Leve recebem a poça
+    const mkPools = (list, name) => {
+      const im = new THREE.InstancedMesh(pg, poolMat, list.length);
+      list.forEach((p, i) => im.setMatrixAt(i, new THREE.Matrix4().makeTranslation(p.x, G + 0.07, p.z)));
+      im.name = name; g.add(im); reflHide.push(im); return im;
+    };
+    let pg = null;
     if (pools.length) {
-      const pg = new THREE.PlaneGeometry(36, 36).rotateX(-Math.PI / 2);
+      pg = new THREE.PlaneGeometry(36, 36).rotateX(-Math.PI / 2);
       poolMat = new THREE.ShaderMaterial({
         uniforms: { uL: { value: 0 }, uCol: { value: new THREE.Color(1, 0.62, 0.32) } },
         vertexShader: `varying vec3 vL; void main(){ vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0); vL = (instanceMatrix * vec4(position, 1.0)).xyz - (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
@@ -673,9 +688,8 @@ export async function buildRealEnvironment(M, base = 'data/') {
           void main(){ float h = 8.6, r2 = dot(vL.xz, vL.xz); float k = pow(h * h / (h * h + r2), 1.5) * smoothstep(18.0, 11.0, sqrt(r2)); gl_FragColor = vec4(uCol * uL * k, 1.0); }`,
         transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
       });
-      const im = new THREE.InstancedMesh(pg, poolMat, pools.length);
-      pools.forEach((p, i) => im.setMatrixAt(i, new THREE.Matrix4().makeTranslation(p.x, G + 0.07, p.z)));
-      im.name = 'Pocas_luz_postes'; g.add(im); reflHide.push(im);
+      mkPools(pools, 'Pocas_luz_postes');
+      if (near.length > 3) { poolsNear = mkPools(near.slice(3), 'Pocas_luz_postes_proximos'); poolsNear.visible = false; }
     }
   }
 
@@ -756,10 +770,11 @@ export async function buildRealEnvironment(M, base = 'data/') {
     if (okTree(x, z, 0.8)) trees[r() < 0.6 ? 'broad' : r() < 0.6 ? 'shrub' : 'palm'].push([x, z]);
   });
   // instâncias
-  const leafMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.leaf, alphaTest: 0.42, side: THREE.DoubleSide, roughness: 0.85 }), 'folhas');
-  const frondMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.frond, alphaTest: 0.42, side: THREE.DoubleSide, roughness: 0.8 }), 'palmas');
-  const barkMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.bark, roughness: 0.95 }), 'casca');
-  const palmBarkMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.palmBark, roughness: 0.95 }), 'estipe');
+  // folhagem: muita sobreposição de pixels → LEDs só nas árvores a até 80 m da ponte
+  const leafMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.leaf, alphaTest: 0.42, side: THREE.DoubleSide, roughness: 0.85 }), 'folhas', 80, true);
+  const frondMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.frond, alphaTest: 0.42, side: THREE.DoubleSide, roughness: 0.8 }), 'palmas', 80, true);
+  const barkMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.bark, roughness: 0.95 }), 'casca', 80, true);
+  const palmBarkMat = nearSpots(new THREE.MeshStandardMaterial({ map: T.palmBark, roughness: 0.95 }), 'estipe', 80, true);
   const veg = new THREE.Group(); veg.name = 'Vegetacao';
   const inst = (geo, mat, pts, name, sc = [0.85, 1.2], tint = null) => {
     if (!pts.length) return null;
@@ -773,7 +788,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
   variants(trees.palm, 3).forEach((pts, k) => { const t = palmGeo(rng(200 + k)); inst(t.trunk, palmBarkMat, pts, 'Coqueiros'); inst(t.crown, frondMat, pts, 'Folhas_coqueiro', null, tintLeaf); });
   variants(trees.shrub, 2).forEach((pts, k) => { const t = broadleafGeo(rng(300 + k), 0.38, 14); inst(t.crown, leafMat, pts, 'Arbustos', null, tintLeaf); });
   g.add(veg);
-  veg.children.forEach(o => { reflHide.push(o); lods.push([o, 480]); });
+  veg.children.forEach(o => { reflHide.push(o); });
 
   // ---------- barcos atracados nas margens próximas ----------
   {
@@ -833,6 +848,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
     if (poolMat) poolMat.uniforms.uL.value = lampsOn && m.lamp ? 1.6 : 0;
     if (eu) { eu.userData.mats[0].emissiveIntensity = m.win ? 0.6 : 0; eu.userData.mats[1].emissiveIntensity = m.win ? 0.25 : 0; }
   }
+  const treeFar = TREE_FAR;
   const stats = { buildings: B.length, roads: R.length, pois: POI.length, signs: signs.length, trees: trees.broad.length + trees.palm.length + trees.shrub.length };
-  return { group: g, pick, lampPos, reflHide, city, lods, groundAt, onLand, applyMode, stats, real: true, eu };
+  return { group: g, pick, lampPos, reflHide, city, lods, groundAt, onLand, applyMode, stats, real: true, eu, treeFar, setStreetDynamic: (n) => { if (poolsNear) poolsNear.visible = n <= 3; } };
 }

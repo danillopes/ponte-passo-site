@@ -40,7 +40,7 @@ function baseGroups() {
     G({ name: 'Washers sob o tabuleiro', mount: 'underDeck', type: 'washer', beam: 30, power: 8, nLights: 6 }),
     G({ name: 'Projetores no cais', mount: 'quay', type: 'flood', beam: 10, power: 30, nLights: 4 }),
     G({ name: 'Balizadores no rodapé', mount: 'postFoot', type: 'bollard', beam: 60, power: 2, nLights: 6 }),
-    G({ name: 'Luz longitudinal para reconhecimento', mount: 'faceLight', type: 'bollard', beam: 60, power: 2, nLights: 22 }),
+    G({ name: 'Luz longitudinal para reconhecimento', mount: 'faceLight', type: 'bollard', beam: 60, power: 2, nLights: 6 }),
     G({ name: 'Balizadores das escadas', mount: 'stairs', type: 'bollard', beam: 60, power: 3, nLights: 4 }),
     G({ key: 'avulsas', name: 'Luminárias avulsas', mount: 'custom', type: 'flood', beam: 25, power: 30, nLights: 6 }),
     projGroup(),
@@ -90,10 +90,12 @@ function presetGroups(key) {
 }
 
 const IS_MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(screen.width, screen.height) < 820;
+// vídeo integrado (Intel UHD/Iris, AMD Vega/Radeon Graphics, celulares): começa no Leve
+const WEAK_GPU = (() => { try { const gl = document.createElement('canvas').getContext('webgl2'); const ext = gl && gl.getExtension('WEBGL_debug_renderer_info'); const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : ''; return /intel|uhd|iris|radeon\(tm\) graphics|vega|mali|adreno|powervr|swiftshader|llvmpipe/i.test(r); } catch (e) { return false; } })();
 const S = {
   mouse: 0.5, mode: 'noite', ev: 0, bloom: 0.18, refl: 0.5, ripple: 0.03, fog: 0.25, lamps: true, shadows: false,
   fm: 0.8, criteria: CRITERIA_REF.map(c => ({ ...c })), layers: { funcional: true, cenica: true }, waterAnim: false,
-  people: true, city: true, haze: 0.45, dims: false, heat: false, quality: IS_MOBILE ? 'leve' : 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
+  people: true, city: true, haze: 0.45, dims: false, heat: false, quality: IS_MOBILE || WEAK_GPU ? 'leve' : 'media', hours: 12, tarifa: 0.85, preset: 'cenica',
   groups: presetGroups('cenica'),
 };
 try {
@@ -261,7 +263,7 @@ composer.addPass(finalPass);
 const MODES = {
   noite: { nome: 'Noite', wbK: 3700, exp: 0.24, top: [0.012, 0.014, 0.026], hor: [0.14, 0.12, 0.12], bot: [0.025, 0.024, 0.025], glow: [0.24, 0.13, 0.07], stars: true, sunI: 0.5, sunC: '#a9b8ff', sunPos: [-60, 120, 140], hemiI: 0.9, hemiSky: '#5a6a9a', hemiGnd: '#2a2420', win: 3.5, lamp: 12000, body: [0.012, 0.016, 0.018], sunShadow: false },
   azul: { nome: 'Hora azul', wbK: 5000, exp: 0.085, top: [0.7, 1.3, 3.4], hor: [6.5, 4.6, 4.0], bot: [0.5, 0.5, 0.6], glow: [2.4, 1.0, 0.35], stars: false, sunI: 2.5, sunC: '#ffb27a', sunPos: [-200, 14, 60], hemiI: 7, hemiSky: '#7f95c8', hemiGnd: '#3a3530', win: 6, lamp: 15000, body: [0.25, 0.33, 0.38], sunShadow: false },
-  dia: { nome: 'Dia', wbK: 6200, exp: 0.00012, top: [1500, 3100, 7400], hor: [6000, 6700, 7600], bot: [1400, 1400, 1400], glow: [0, 0, 0], stars: false, sunI: 62000, sunC: '#fff2df', sunPos: [-80, 140, 60], hemiI: 15000, hemiSky: '#a8c8ff', hemiGnd: '#8a7f70', win: 0, lamp: 0, body: [430, 520, 470], sunShadow: true },
+  dia: { nome: 'Dia', wbK: 6200, exp: 0.00012, top: [1500, 3100, 7400], hor: [6000, 6700, 7600], bot: [1400, 1400, 1400], glow: [0, 0, 0], stars: false, sunI: 62000, sunC: '#fff2df', sunPos: [-80, 140, 60], hemiI: 15000, hemiSky: '#a8c8ff', hemiGnd: '#8a7f70', win: 0, lamp: 0, body: [650, 760, 640], sunShadow: true },
 };
 let exposure = 1;
 function applyMode() {
@@ -318,7 +320,7 @@ function dimLabel(text, p) { const d = document.createElement('div'); d.classNam
 // =====================================================================
 //  Luzes LED: construção, cálculo e HUD
 // =====================================================================
-const QUALITY = { leve: { dpr: 1, lights: 12, refl: 0.3, msaa: 0, bloom: 0.5 }, media: { dpr: 1.5, lights: 28, refl: 0.45, msaa: 4, bloom: 1 }, alta: { dpr: 2, lights: 44, refl: 0.7, msaa: 4, bloom: 1 } };
+const QUALITY = { leve: { dpr: 1, lights: 8, street: 3, refl: 0.25, msaa: 0, bloom: 0.5 }, media: { dpr: 1.25, lights: 18, street: 6, refl: 0.4, msaa: 4, bloom: 0.75 }, alta: { dpr: 2, lights: 32, street: 8, refl: 0.7, msaa: 4, bloom: 1 } };
 let lastCalc = null;
 // orçamento global de luzes dinâmicas: a prévia nunca passa do limite da qualidade;
 // grupos que iluminam o piso (corrimão, rodapé, escadas, pórtico) têm prioridade
@@ -329,7 +331,8 @@ function allocate() {
   if (want <= B) { on.forEach(g => out.set(g.id, g.nLights)); return out; }
   const w = (g) => g.nLights * (FLOOR_MOUNTS.includes(g.mount) ? 2 : 1), W = on.reduce((a, g) => a + w(g), 0);
   let used = 0;
-  on.forEach(g => { const n = Math.min(g.nLights, Math.max(Math.min(2, g.nLights), Math.floor(B * w(g) / W))); out.set(g.id, n); used += n; });
+  const floor = on.length * 2 <= B ? 2 : 1; // muitos grupos ligados: 1 luz cada antes de distribuir o resto
+  on.forEach(g => { const n = Math.min(g.nLights, Math.max(Math.min(floor, g.nLights), Math.floor(B * w(g) / W))); out.set(g.id, n); used += n; });
   const order = [...on].sort((a, b) => w(b) - w(a));
   for (let i = 0; used < B && i < order.length * 4; i++) { const g = order[i % order.length]; if (out.get(g.id) < g.nLights) { out.set(g.id, out.get(g.id) + 1); used++; } }
   return out;
@@ -462,6 +465,7 @@ function renderScenePane() {
     slider({ id: 'haze', label: 'Facho visível no ar (umidade / maresia)', min: 0, max: 1, step: 0.05, value: S.haze ?? 0.45, f: v => v ? `σ ${fmt(hazeSigma(v) * 1000, 1)}‰/m` : 'ar limpo', on: v => { const was = rig.haze.value > 0; S.haze = v; rig.haze.value = hazeSigma(v); if (was !== v > 0) rebuildAll(); poke(); persist(); } }),
     toggle({ id: 'tCity', label: env.real ? 'Edificações, letreiros, barcos e ponte de concreto (OSM)' : 'Cidade e barcos', checked: S.city, on: v => { S.city = v; setCity(); persist(); } }),
     env.real ? el('p', { class: 'note', html: `Entorno real: ${env.stats.buildings} edificações, ${env.stats.roads} vias, ${env.stats.signs} letreiros de comércios e ${env.stats.trees} árvores, a partir do OpenStreetMap (© colaboradores do <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener" style="color:var(--led)">OpenStreetMap</a>, ODbL). Alturas, cores e telhados são estimados.` }) : null,
+    toggle({ id: 'tFps', label: 'Mostrar FPS e placa de vídeo', checked: S.showFps, on: v => { S.showFps = v; $('#fps').hidden = !v; persist(); } }),
     toggle({ id: 'tWater', label: 'Água animada com a cena parada (gasta mais bateria)', checked: S.waterAnim, on: v => { S.waterAnim = v; persist(); } }),
     toggle({ id: 'tDims', label: 'Cotas e medidas', checked: S.dims, on: v => { S.dims = v; dims.visible = v; labelRenderer.render(scene, camera); persist(); } }),
     el('h3', {}, 'Qualidade de renderização'),
@@ -1065,6 +1069,9 @@ function plankGaps() {
 }
 function applyQuality() {
   const q = QUALITY[S.quality];
+  streetLights.children.filter(o => o.isSpotLight).forEach((l, i) => { l.visible = i < q.street; });
+  if (env.setStreetDynamic) env.setStreetDynamic(q.street);
+  if (env.treeFar) env.treeFar.value = { leve: 480, media: 750, alta: 1400 }[S.quality];
   plankGaps();
   const sm = S.quality === 'leve' ? 1024 : 2048;
   if (sun.shadow.mapSize.x !== sm) { sun.shadow.mapSize.set(sm, sm); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } shadowsDirty(); }
@@ -1094,6 +1101,13 @@ const tourRecorder = createTourRecorder({ camera, controls, renderer, stage, res
 // interação: qualquer gesto ou ajuste devolve a taxa máxima de quadros
 controls.addEventListener('change', () => { poke(); perf.lodDirty = true; });
 ['pointerdown', 'wheel', 'input', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, poke, { passive: true }));
+// medidor de FPS (quadros realmente desenhados enquanto há movimento)
+const GPU_NAME = (() => { try { const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info'); return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL).replace(/^ANGLE \(|\)$/g, '').split(',').slice(0, 2).join(',') : ''; } catch (e) { return ''; } })();
+const fpsMeter = { n: 0, t: performance.now() };
+function tickFps(now) {
+  if (!S.showFps) return; fpsMeter.n++;
+  if (now - fpsMeter.t > 1000) { const f = fpsMeter.n * 1000 / (now - fpsMeter.t); $('#fps').innerHTML = `<small>${perf.idle ? 'parado (economia)' : 'FPS'} · ${S.quality} · ${Math.round(perf.dpr * 100)}% res.</small>${perf.idle ? '—' : Math.round(f)} <small style="display:inline">${GPU_NAME}</small>`; fpsMeter.n = 0; fpsMeter.t = now; }
+}
 const hasEffects = () => S.groups.some(g => isOn(g) && g.effect !== 'estatico');
 function scheduleFrame() { if (!perf.raf && !document.hidden) perf.raf = requestAnimationFrame(frame); }
 function frame(now) {
@@ -1129,7 +1143,7 @@ function frame(now) {
   WU.time.value = t;
   rig.animate(S.groups, t);
   feedWaterLights();
-  composer.render();
+  composer.render(); tickFps(now);
   tourRecorder.capture(now);
   if (dims.visible) labelRenderer.render(scene, camera);
   if (perf.lodDirty !== false) updateLOD();
@@ -1141,6 +1155,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // inicialização
+$('#fps').hidden = !S.showFps;
 people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
 if (env.real) { reflHide.push(...env.reflHide); groundAt = env.groundAt; }
 else env.group.traverse(o => { if (['Copas', 'Troncos', 'Coqueiros', 'Folhas_coqueiro', 'Postes', 'Guarda_corpo_cais', 'Postes_ponte'].includes(o.name)) reflHide.push(o); });

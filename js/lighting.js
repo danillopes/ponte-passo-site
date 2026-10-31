@@ -25,7 +25,12 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 {
   const A = 'float spotAttenuation = getSpotAttenuation( spotLight.coneCos, spotLight.penumbraCos, angleCos );';
   const src = THREE.ShaderChunk.lights_pars_begin;
-  if (src.includes(A)) THREE.ShaderChunk.lights_pars_begin = src.replace(A, `float spotAttenuation;
+  // desempenho: luz spot que chega com menos de 0,02 lx (ou fora do cone) não entra no BRDF
+  const VIS = 'light.visible = ( light.color != vec3( 0.0 ) );', at = src.indexOf('void getSpotLightInfo');
+  const src2 = at < 0 ? src : src.slice(0, at) + src.slice(at).replace(VIS, 'light.visible = max( light.color.r, max( light.color.g, light.color.b ) ) > 0.02;');
+  const fb = THREE.ShaderChunk.lights_fragment_begin, a0 = fb.indexOf('#if ( NUM_SPOT_LIGHTS > 0 )'), b0 = fb.indexOf('#if ( NUM_DIR_LIGHTS > 0 )');
+  if (a0 >= 0 && b0 > a0) THREE.ShaderChunk.lights_fragment_begin = fb.slice(0, a0) + fb.slice(a0, b0).replace('RE_Direct( directLight,', 'if ( directLight.visible ) RE_Direct( directLight,') + fb.slice(b0);
+  if (src2.includes(A)) THREE.ShaderChunk.lights_pars_begin = src2.replace(A, `float spotAttenuation;
 		if ( spotLight.distance > 19999.0 ) {
 			float th = acos( clamp( angleCos, -1.0, 1.0 ) ), thS = acos( spotLight.coneCos ), hh = max( acos( spotLight.penumbraCos ), 1e-3 );
 			float kk = spotLight.distance - 20000.0, sp = floor( kk / 1000.0 ) / 1000.0, rg = ( kk - floor( kk / 1000.0 ) * 1000.0 ) / 1000.0;
@@ -384,7 +389,7 @@ function beamMaterial(pr, col, hazeU) {
         float t0 = 0.0, disc = b * b - 4.0 * a * c;
         if (!(dc > 0.0 && c > 0.0) && disc > 0.0 && abs(a) > 1e-6) { float sq = sqrt(disc), r1 = min((-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)); if (r1 > 0.0 && r1 < t1) t0 = r1; }
         float seg = t1 - t0; if (seg <= 1e-4) discard;
-        const int N = 22; float dt = seg / float(N);
+        const int N = 16; float dt = seg / float(N);
         float j = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
         float g2 = uG * uG, sum = 0.0;
         for (int i = 0; i < N; i++) {
@@ -407,10 +412,11 @@ export class LightRig {
   constructor(scene) {
     this.root = new THREE.Group(); this.root.name = 'Iluminacao_LED'; scene.add(this.root);
     this.rt = new Map(); this.shadows = false; this.budgetScale = 1;
-    this.haze = { value: 0 }; this.occluders = []; this.ray = new THREE.Raycaster();
+    this.maps = 0; this.haze = { value: 0 }; this.occluders = []; this.ray = new THREE.Raycaster();
   }
   clear(id) {
     const r = this.rt.get(id); if (!r) return;
+    this.maps = Math.max(0, this.maps - (r.maps || 0));
     r.obj.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material && o.material !== housingMat && o.material !== housingGrey) o.material.dispose(); if (o.isLight && o.shadow && o.shadow.map) o.shadow.map.dispose(); });
     this.root.remove(r.obj); this.rt.delete(id);
   }
@@ -530,7 +536,8 @@ export class LightRig {
       L.userData.core = pr.h * 1.6; L.shadow.focus = Math.min(1, pr.h * 4 / L.angle);
     }
     L.color.copy(cNorm);
-    if (ph) { L.map = photometryMap(ph, g.photoRot ? 90 : 0, halfDeg); L.up.copy(rAxis || refAxis(d, null)); }
+    // cada mapa ocupa uma unidade de textura no shader: no máximo 4 luzes com curva projetada
+    if (ph && this.maps < 4) { L.map = photometryMap(ph, g.photoRot ? 90 : 0, halfDeg); L.up.copy(rAxis || refAxis(d, null)); this.maps++; rt.maps = (rt.maps || 0) + 1; }
     L.position.copy(p); L.target.position.copy(p).add(d.clone().multiplyScalar(5));
     obj.add(L, L.target);
     rt.lights.push({ light: L, I, s, base: cNorm.clone(), ph, field });

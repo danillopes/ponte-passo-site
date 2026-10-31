@@ -64,6 +64,7 @@ nav.links a:hover { border-color: var(--led); color: var(--led); }
 .xyz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 6px; }
 .xyz .mini { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 2px; }
 .xyz input { width: 100%; min-width: 0; }
+.fps { position: absolute; left: 12px; bottom: 76px; pointer-events: none; font: 600 15px var(--f-mono, monospace); max-width: 60%; }
 .toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: var(--led); color: #1b1203; padding: 8px 14px; border-radius: 6px; font-weight: 600; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,0.4); max-width: calc(100% - 32px); text-align: center; }
 .coord { position: absolute; right: 12px; top: 12px; pointer-events: none; }
 .legend { position: absolute; right: 12px; bottom: 12px; width: 230px; pointer-events: none; }
@@ -197,6 +198,7 @@ table.qt th { font-weight: 600; color: var(--muted); font-size: 10.5px; text-tra
     <div class="views" id="views"></div>
     <div class="chip coord" id="coord" hidden></div>
     <div class="hud" id="hud"></div>
+    <div class="chip fps" id="fps" hidden></div>
     <div class="chip legend" id="legend" hidden>
       <small>Iluminância horizontal no piso (lx)</small>
       <div class="bar" id="legendBar"></div>
