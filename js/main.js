@@ -13,6 +13,7 @@ import { P, H, deckY, cableY, stairSteps, makeTextures, makeMaterials, deckLight
 import { parsePhotometry, packPhoto } from './photometry.js';
 import { buildRealEnvironment } from './entorno.js';
 import { TYPES, MOUNTS, EFFECTS, LightRig, computeGrid, computeVertical, CRITERIA_REF, LAYERS, isOn, roleOf, beamOf, falseColor, FALSE_STOPS, groupColor, efficacy, fluxUnit, candela, nitsOf, powerForNits, cctToSRGB, profOf } from './lighting.js';
+import { createTourRecorder } from './recording.js';
 
 const $ = (s) => document.querySelector(s);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -23,7 +24,9 @@ const fmt = (v, d = 0) => Number(v).toLocaleString('pt-BR', { minimumFractionDig
 // =====================================================================
 let uid = 0;
 function G(o) {
-  const g = Object.assign({ id: 'g' + (++uid), on: false, colorMode: 'cct', cct: 3000, rgb: '#2a4bff', power: 10, dim: 100, effOverride: null, beam: 120, effect: 'estatico', speed: 0.4, lambda: 8, nLights: 6, params: {}, fixtures: [] }, o);
+  const nextId = 'g' + (++uid);
+  const g = Object.assign({ id: nextId, on: false, colorMode: 'cct', cct: 3000, rgb: '#2a4bff', power: 10, dim: 100, effOverride: null, beam: 120, effect: 'estatico', speed: 0.4, lambda: 8, nLights: 6, params: {}, fixtures: [] }, o);
+  if (!g.id) g.id = nextId;
   for (const p of MOUNTS[g.mount].params) if (g.params[p.k] === undefined) g.params[p.k] = p.def;
   return g;
 }
@@ -37,6 +40,7 @@ function baseGroups() {
     G({ name: 'Washers sob o tabuleiro', mount: 'underDeck', type: 'washer', beam: 30, power: 8, nLights: 6 }),
     G({ name: 'Projetores no cais', mount: 'quay', type: 'flood', beam: 10, power: 30, nLights: 4 }),
     G({ name: 'Balizadores no rodapé', mount: 'postFoot', type: 'bollard', beam: 60, power: 2, nLights: 6 }),
+    G({ name: 'Luz longitudinal para reconhecimento', mount: 'faceLight', type: 'bollard', beam: 60, power: 2, nLights: 22 }),
     G({ name: 'Balizadores das escadas', mount: 'stairs', type: 'bollard', beam: 60, power: 3, nLights: 4 }),
     G({ key: 'avulsas', name: 'Luminárias avulsas', mount: 'custom', type: 'flood', beam: 25, power: 30, nLights: 6 }),
     projGroup(),
@@ -54,6 +58,7 @@ const PRESETS = {
     handrail: { on: true, colorMode: 'cct', cct: 3000, power: 0.15, beam: 40 },
     towerUp: { on: true, colorMode: 'cct', cct: 3000, power: 8, beam: 25 },
     towerTop: { on: true, colorMode: 'cct', cct: 3000, power: 6, beam: 45 },
+    faceLight: { on: true, colorMode: 'cct', cct: 2700, power: 2, beam: 60, dim: 80, params: { spacing: 10, down: 12 } },
     underDeck: { on: true, colorMode: 'rgb', rgb: '#7fb2e6', power: 3, beam: 30, params: { spacing: 8 } },
     stairs: { on: true, colorMode: 'cct', cct: 3000, power: 2 },
     proj10: { on: true },
@@ -93,15 +98,19 @@ const S = {
 };
 try {
   const saved = JSON.parse(localStorage.getItem('ponte-pensil-v4') || 'null');
-  if (saved && saved.groups) { Object.assign(S, saved, { groups: migrate(saved.groups.map(g => G({ ...g, id: undefined }))) }); }
+  if (saved && saved.groups) { Object.assign(S, saved, { groups: migrate(saved.groups.map(g => G({ ...g, id: undefined })), saved.preset) }); }
 } catch (e) { /* armazenamento indisponível */ }
 /** Projetos antigos: identifica o grupo avulso original e acrescenta o grupo de projetores 10 W. */
-function migrate(gs) {
+function migrate(gs, preset = S.preset) {
   gs.forEach(g => { if (!g.key && g.mount === 'custom' && g.name === 'Luminárias avulsas') g.key = 'avulsas'; });
   if (!gs.some(g => g.key === 'proj10')) { const pg = projGroup(); pg.on = true; gs.push(pg); }
+  if (!gs.some(g => g.mount === 'faceLight')) {
+    const fg = presetGroups(PRESETS[preset] ? preset : 'cenica').find(g => g.mount === 'faceLight');
+    gs.push(fg);
+  }
   return gs;
 }
-const perf = { idle: false, frame: 0, last: performance.now(), lastInput: performance.now(), dpr: 1, scale: 1, acc: 0, n: 0, checkAt: performance.now() + 2000 };
+const perf = { idle: false, frozen: false, raf: 0, frame: 0, last: performance.now(), lastInput: performance.now(), dpr: 1, scale: 1, acc: 0, n: 0, checkAt: performance.now() + 2000 };
 Object.assign(LAYERS, S.layers);
 const persist = debounce(() => { try { localStorage.setItem('ponte-pensil-v4', JSON.stringify(serialize())); } catch (e) { /* ignora */ } }, 400);
 function serialize() { const { groups, ...rest } = S; return { ...rest, groups: groups.map(({ id, _alloc, ...g }) => g) }; }
@@ -236,9 +245,11 @@ const finalPass = new ShaderPass({
       vec3 c = texture2D(tDiffuse, vUv).rgb * wb;
       float m = max(c.r, max(c.g, c.b));
       vec3 o = m > 1e-5 ? c*(aces(m)/m) : c;
-      float w = smoothstep(3.0, 40.0, m)*0.6;
+      float w = smoothstep(7.0, 70.0, m)*0.24;
       o = mix(o, vec3(max(o.r, max(o.g, o.b))), w);
-      vec2 q = vUv - 0.5; o *= 1.0 - dot(q, q)*0.35;
+      float lum = dot(o, vec3(0.2126, 0.7152, 0.0722));
+      o += vec3(0.004, 0.006, 0.010)*(1.0 - smoothstep(0.015, 0.16, lum));
+      vec2 q = vUv - 0.5; o *= 1.0 - dot(q, q)*0.22;
       gl_FragColor = vec4(toSRGB(clamp(o, 0.0, 1.0)), 1.0);
     }`,
 });
@@ -369,7 +380,7 @@ function renderHUD() {
     <div class="chip"><small>Potência</small>${fmt(st.W, 0)} W</div>
     <div class="chip ${cls ? 'ok' : 'no'}" title="Estimativa com critérios de referência editáveis na aba Cálculo — confirme na NBR 5101:2024"><small>Estimativa · critério de referência</small>${cls ? 'Compatível com ' + cls + '*' : 'Abaixo de ' + last + '*'}</div>`;
 }
-const poke = () => { perf.lastInput = performance.now(); };
+const poke = () => { perf.lastInput = performance.now(); perf.frozen = false; scheduleFrame(); };
 
 // =====================================================================
 //  Interface
@@ -427,7 +438,7 @@ const VIEWS = [
   ['Drone', [60, 90, 75], [0, 4, 0]],
 ];
 let tween = null;
-function flyTo(p, t) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), p1: V(...p), t1: V(...t), s: performance.now(), d: 1200 }; }
+function flyTo(p, t) { tween = { p0: camera.position.clone(), t0: controls.target.clone(), p1: V(...p), t1: V(...t), s: performance.now(), d: 1200 }; poke(); }
 VIEWS.forEach(([n, p, t]) => $('#views').append(el('button', { type: 'button', onclick: () => flyTo(p, t) }, n)));
 
 // --- Cena ---
@@ -831,6 +842,11 @@ function renderFilePane() {
     catch (e) { toast('Não consegui ler esse arquivo. Use um .json salvo por esta página.', 5000); }
     file.value = '';
   });
+  const videoFormat = el('select', { id: 'videoFormat', 'aria-label': 'Formato do vídeo' },
+    el('option', { value: 'vertical' }, 'Celular vertical — 1080 × 1920'),
+    el('option', { value: 'landscape' }, 'Paisagem — 1920 × 1080'));
+  const recordButton = el('button', { class: 'btn primary', type: 'button', onclick: () => startTourRecording(videoFormat.value) }, 'Gravar tour 360°');
+  if (!tourRecorder?.supported()) { recordButton.disabled = true; recordButton.title = 'Use Chrome ou Edge atualizado no computador'; }
   p.append(
     el('h3', {}, 'Modelo 3D'),
     el('div', { class: 'btns' },
@@ -844,6 +860,9 @@ function renderFilePane() {
       el('button', { class: 'btn', type: 'button', onclick: () => file.click() }, 'Abrir projeto (.json)'), file),
     el('h3', {}, 'Imagem'),
     el('div', { class: 'btns' }, el('button', { class: 'btn', type: 'button', onclick: screenshot }, 'Capturar vista atual (.png)')),
+    el('h3', {}, 'Vídeo 360°'),
+    el('div', { class: 'pair' }, videoFormat, recordButton),
+    el('p', { class: 'note' }, 'Grava no computador um tour automático da ponte e aproxima a câmera de todos os grupos de luz ativos. O vídeo inclui nome, função e especificação de cada foco. MP4 quando o navegador aceitar H.264; caso contrário, WebM.'),
     el('h3', {}, 'Documentação'),
     el('p', { class: 'note', html: '<a href="guia.html" style="color:var(--led)">Memorial técnico de modelagem</a>: geometria, coordenadas, catenária, pendurais, tabuleiro, guarda-corpo, Geometry Nodes/Grasshopper, materiais e câmera.<br><a href="blender/ponte_pensil_blender.py" download style="color:var(--led)">ponte_pensil_blender.py</a>: gera a ponte paramétrica dentro do Blender (Scripting › Run Script).' }),
     el('h3', {}, 'Restaurar'),
@@ -893,6 +912,24 @@ function exportCSV() {
   download(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'ponte-pensil-quantitativo.csv');
 }
 function screenshot() { composer.render(); renderer.domElement.toBlob(b => b && download(b, 'ponte-pensil-vista.png'), 'image/png'); }
+
+function recordingGroups() {
+  return S.groups.filter(isOn).map(g => {
+    const rt = rig.rt.get(g.id), pts = rt?.elems?.map(e => e.p).filter(Boolean) || [];
+    const focus = pts.length ? pts.reduce((a, p) => a.add(p), V()).multiplyScalar(1 / pts.length).toArray() : null;
+    const T = TYPES[g.type];
+    return {
+      name: g.name, role: roleOf(g) === 'funcional' ? 'Iluminação funcional' : 'Iluminação cênica', mount: g.mount, focus,
+      fixture: T?.curto || T?.nome || g.type, colorMode: g.colorMode, cct: g.cct, rgb: g.rgb,
+      power: fmt(g.power, 2), unit: T?.unit || 'W', dim: g.dim, beam: beamOf(g),
+      photo: g.photo ? `${g.photo.kind} · ${g.photo.file || g.photo.name || 'curva carregada'}` : 'Distribuição idealizada — carregue IES/LDT para substituir',
+    };
+  });
+}
+function startTourRecording(format) {
+  if (S.mode === 'dia') toast('Dica: o tour fica mais expressivo em Noite ou Hora azul.', 5000);
+  tween = null; tourRecorder.start({ format, groups: recordingGroups() });
+}
 
 // --- Exportação GLB ---
 function exportMat(m) {
@@ -1004,9 +1041,10 @@ window.addEventListener('keydown', e => {
 //  Laço principal
 // =====================================================================
 function resize() {
-  const w = stage.clientWidth, h = stage.clientHeight; if (!w || !h) return;
+  const fixed = tourRecorder?.size;
+  const w = fixed?.width || stage.clientWidth, h = fixed?.height || stage.clientHeight; if (!w || !h) return;
   if (typeof poke === 'function') poke();
-  const dpr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr) * perf.scale); perf.dpr = dpr;
+  const dpr = fixed ? 1 : Math.max(0.5, Math.min(window.devicePixelRatio || 1, QUALITY[S.quality].dpr) * perf.scale); perf.dpr = dpr;
   renderer.setPixelRatio(dpr); renderer.setSize(w, h, false);
   composer.setPixelRatio(dpr); composer.setSize(w, h);
   labelRenderer.setSize(w, h);
@@ -1052,24 +1090,25 @@ function feedWaterLights() {
   WU.lN.value = n;
 }
 const clock = new THREE.Clock();
+const tourRecorder = createTourRecorder({ camera, controls, renderer, stage, resize, wake: poke, download, onMessage: toast });
 // interação: qualquer gesto ou ajuste devolve a taxa máxima de quadros
 controls.addEventListener('change', () => { poke(); perf.lodDirty = true; });
 ['pointerdown', 'wheel', 'input', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, poke, { passive: true }));
 const hasEffects = () => S.groups.some(g => isOn(g) && g.effect !== 'estatico');
+function scheduleFrame() { if (!perf.raf && !document.hidden) perf.raf = requestAnimationFrame(frame); }
 function frame(now) {
-  requestAnimationFrame(frame);
-document.addEventListener('visibilitychange', () => { perf.last = performance.now(); clock.getDelta(); });
-  perf.idle = !tween && now - perf.lastInput > 2500;
+  perf.raf = 0;
+  perf.idle = !tourRecorder.active && !tween && now - perf.lastInput > 2500;
   // parada de verdade: sem efeitos nem água animada, nada é redesenhado (economiza bateria)
-  if (perf.idle && now - perf.lastInput > 4000 && !S.waterAnim && !hasEffects() && perf.frozen) return;
+  if (perf.idle && now - perf.lastInput > 4000 && !S.waterAnim && !hasEffects()) { perf.frozen = true; return; }
   perf.frozen = perf.idle && now - perf.lastInput > 4000;
   // parado: 30 qps com efeitos DMX, 20 qps sem (a água continua mexendo)
   const minGap = perf.idle ? (hasEffects() ? 32 : 48) : 0;
-  if (now - perf.last < minGap) return;
+  if (now - perf.last < minGap) { scheduleFrame(); return; }
   const dt = now - perf.last; perf.last = now; perf.frame++;
   // resolução dinâmica: mira ~50 qps enquanto o usuário interage
   if (!perf.idle && dt < 250) { perf.acc += dt; perf.n++; }
-  if (now > perf.checkAt && perf.n > 20) {
+  if (!tourRecorder.active && now > perf.checkAt && perf.n > 20) {
     const avg = perf.acc / perf.n, old = perf.scale;
     if (avg > 24) perf.scale = Math.max(0.55, perf.scale - 0.1);
     else if (avg < 15) perf.scale = Math.min(1, perf.scale + 0.05);
@@ -1077,12 +1116,13 @@ document.addEventListener('visibilitychange', () => { perf.last = performance.no
     perf.acc = 0; perf.n = 0; perf.checkAt = now + 1500;
   }
   const t = clock.getElapsedTime();
-  if (tween) {
+  if (tourRecorder.active) tourRecorder.update(now);
+  else if (tween) {
     const k = Math.min(1, (performance.now() - tween.s) / tween.d), e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
     camera.position.lerpVectors(tween.p0, tween.p1, e); controls.target.lerpVectors(tween.t0, tween.t1, e);
     if (k >= 1) tween = null;
   }
-  controls.update();
+  if (!tourRecorder.active) controls.update();
   { const cp = camera.position, gmin = groundAt(cp.x, cp.z) + (Math.abs(cp.x) > P.quayX - 0.2 ? 0.5 : 0.35);
     if (cp.y < gmin) cp.y = gmin;
     const tg = controls.target, tmin = groundAt(tg.x, tg.z) + 0.05; if (tg.y < tmin) tg.y = tmin; }
@@ -1090,9 +1130,15 @@ document.addEventListener('visibilitychange', () => { perf.last = performance.no
   rig.animate(S.groups, t);
   feedWaterLights();
   composer.render();
+  tourRecorder.capture(now);
   if (dims.visible) labelRenderer.render(scene, camera);
   if (perf.lodDirty !== false) updateLOD();
+  scheduleFrame();
 }
+document.addEventListener('visibilitychange', () => {
+  perf.last = performance.now(); clock.getDelta();
+  if (!document.hidden) { perf.lastInput = performance.now(); perf.frozen = false; scheduleFrame(); }
+});
 
 // inicialização
 people.visible = S.people; dims.visible = S.dims; heat.mesh.visible = S.heat; $('#legend').hidden = !S.heat; setCity();
@@ -1124,4 +1170,4 @@ renderScenePane(); renderLightPane(); renderFilePane();
 try { const tab = localStorage.getItem('ponte-pensil-tab'); if (tab) document.querySelector(`.tabs button[data-tab="${tab}"]`)?.click(); } catch (e) { /* ignora */ }
 if (window.innerWidth <= 820) { $('#panel').classList.add('min'); $('#sheetToggle').textContent = '▴'; }
 window.__ponte = { env, sel: () => sel, selectFixture, attachGizmo, perf, applyPreset: (k) => { S.groups = presetGroups(k); rig.rebuildAll(S.groups); const c = computeGrid(rig, S.groups); const st = rig.stats(S.groups); return { k, Em: +c.Em.toFixed(1), U0: +c.U0.toFixed(2), Emin: +c.Emin.toFixed(1), Emax: +c.Emax.toFixed(1), W: Math.round(st.W) }; }, S, scene, camera, controls, rig, flyTo, VIEWS, renderer, composer, lastCalc: () => lastCalc };
-requestAnimationFrame(frame);
+scheduleFrame();

@@ -73,6 +73,24 @@ nav.links a:hover { border-color: var(--led); color: var(--led); }
 .views button { background: rgba(16,21,31,0.82); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; font-size: 12px; cursor: pointer; backdrop-filter: blur(6px); }
 .views button:hover { border-color: var(--led); }
 
+/* Gravação: o WebGL renderiza na resolução final e o canvas 2D acrescenta as legendas do vídeo. */
+.recording-preview { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); object-fit: contain; background: #05080d; }
+.recording-ui { position: absolute; z-index: 8; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(10,13,20,.92); box-shadow: 0 12px 40px rgba(0,0,0,.48); backdrop-filter: blur(10px); }
+.recording-ui[hidden] { display: none; }
+.recording-status { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; min-width: 300px; }
+.recording-status b, .recording-status small { display: block; }
+.recording-status small { color: var(--muted); max-width: 250px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recording-status time { font: 500 12px var(--f-mono); color: var(--fg); }
+.recording-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 4px rgba(255,107,91,.14); animation: recordingPulse 1.2s linear infinite; }
+.recording-actions { display: flex; gap: 6px; }
+@keyframes recordingPulse { 50% { opacity: .45; } }
+body.recording-mode #app { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+body.recording-mode header.top, body.recording-mode aside.panel, body.recording-mode .views, body.recording-mode .hud, body.recording-mode .legend, body.recording-mode .coord, body.recording-mode #labels { display: none !important; }
+body.recording-mode #stage { grid-column: 1; grid-row: 1; display: grid; place-items: center; background: #05080d; }
+body.recording-mode #stage > canvas:not(.recording-preview) { visibility: hidden; }
+body.recording-vertical .recording-preview { height: 100%; width: auto; max-width: 100%; }
+body.recording-landscape .recording-preview { width: 100%; height: auto; max-height: 100%; }
+
 /* Painel */
 aside.panel { background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; z-index: 4; }
 .tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--line); }
@@ -157,8 +175,11 @@ table.qt th { font-weight: 600; color: var(--muted); font-size: 10.5px; text-tra
   .legend { width: 170px; bottom: 60px; }
   .views { max-width: calc(100% - 24px); }
   .coord { display: none; }
+  .recording-ui { width: calc(100% - 24px); bottom: max(12px, env(safe-area-inset-bottom, 0px)); flex-direction: column; align-items: stretch; }
+  .recording-status { min-width: 0; }
+  .recording-actions { display: grid; grid-template-columns: 1fr 1fr; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } .recording-dot { animation: none; } }
 </style>
 <script type="importmap">
 { "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/addons/" } }

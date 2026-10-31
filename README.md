@@ -7,16 +7,26 @@ Modelo 3D paramétrico da ponte pênsil que liga **Torres (RS)** a **Passo de To
 ## O que tem
 - Ponte completa: torres-pórtico, 4 cabos em parábola (flecha 7,05 m), 98 pendurais a cada 2 m, transversinas, longarinas, 617 pranchas, guarda-corpo de 1,20 m com tela, patamares, escadas e ancoragens.
 - Cenário: rio com reflexo e ondulação, cais, praças, cidade de Torres (edifícios) e Passo de Torres (casas), barcos, pessoas em escala, iluminação pública existente e a ponte de concreto ao fundo (posição aproximada).
-- 10 grupos de luminárias (cabos, corrimão, pendurais, torres, pórtico, sob o tabuleiro, cais, rodapé, escadas e avulsas posicionadas por clique) com 8 modelos de LED.
+- 12 grupos de luminárias (cabos, corrimão, pendurais, torres, pórtico, sob o tabuleiro, cais, rodapé, luz longitudinal para reconhecimento, escadas, avulsas posicionadas por clique e projetores 10 W) com 9 modelos de LED.
 - Para cada grupo: cor (CCT 1800–6500 K ou RGB), potência, dimerização, eficácia, facho e **luminância em nits** (a potência é recalculada a partir dos nits).
 - Camadas **funcional** (avaliada) e **cênica** (cor, efeitos), ligáveis em separado.
-- Curvas fotométricas reais: cada grupo aceita arquivo **IES (LM-63) ou EULUMDAT (.ldt)**.
+- Curvas fotométricas reais: cada grupo aceita arquivo **IES (LM-63) ou EULUMDAT (.ldt)**; a prévia projeta a distribuição C/γ e aplica os fatores de `TILT=INCLUDE`.
 - Luzes em candela e emissores em cd/m²; cálculo ponto a ponto da iluminância horizontal no piso e vertical a 1,50 m, com obstrução da tela/rodapé, fator de manutenção e valores mantidos.
 - Critérios por classe **editáveis**: vêm com referência provisória (EN 13201-2) e devem ser conferidos na ABNT NBR 5101:2024. O resultado é sempre apresentado como estimativa.
 - Materiais com mapas de cor, relevo e rugosidade (atlas de 12 pranchas, concreto com sujeira por altura, aço galvanizado), balanço de branco por período e reflexo de água suavizado.
-- Desempenho: entorno sem cálculo de spots, piso com mapa de luz do próprio cálculo, orçamento de luzes por qualidade, LOD por distância, resolução dinâmica e renderização sob demanda (para de desenhar com a cena parada).
+- Revisão visual realista: concreto e metais menos plásticos, madeira com relevo controlado, skyline com coroamentos/recuos, água com ondas direcionais e reflexos verticais, além de pós-processamento que preserva a cor dos LEDs sem estourar os pontos de luz.
+- Desempenho: entorno sem cálculo de spots, piso com mapa de luz do próprio cálculo, orçamento de luzes por qualidade, LOD por distância, resolução dinâmica e renderização sob demanda (o `requestAnimationFrame` é suspenso quando a cena fica parada).
 - Efeitos DMX (respiração, onda, corrida, arco-íris), períodos (noite, hora azul, dia), cotas sobre o modelo.
 - Exporta GLB (Blender/Rhino/3ds Max, com luzes spot), CSV de quantitativo, projeto em JSON e imagem PNG.
+- **Tour gravado em vídeo:** na aba Arquivo, o modo “Gravar tour 360°” percorre a ponte, enquadra todos os grupos de luz ativos e grava as especificações no próprio vídeo. Há saída vertical Full HD (1080 × 1920) para celular e paisagem Full HD (1920 × 1080). O navegador gera MP4/H.264 quando disponível e usa WebM como alternativa.
+
+## Gravar um tour 360°
+1. Abra a página no Chrome ou Edge atualizado em um computador.
+2. Escolha a cena, ligue os grupos de iluminação que devem aparecer e abra **Arquivo**.
+3. Escolha **Celular vertical** ou **Paisagem** e clique em **Gravar tour 360°**.
+4. Mantenha a aba aberta. É possível parar e baixar antes do fim ou cancelar sem salvar.
+
+O tour completo dura aproximadamente 45–60 segundos, dependendo do número de grupos ativos. A interface é restaurada automaticamente após o download.
 
 ## Entorno real e iluminação (v5)
 
