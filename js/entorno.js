@@ -661,7 +661,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
       }
     }
     // praças da ponte: postes junto às escadas (posições estimadas)
-    for (const s of [-1, 1]) for (const z of [-5.5, 5.5]) { const x = s * (P.L / 2 + 9); poles.push([V(x, G, z), V(x, G + 6, z)]); arms.push([V(x, G + 5.7, z), V(x, G + 6, z - Math.sign(z) * 0.9)]); heads.push(V(x, G + 5.95, z - Math.sign(z) * 0.9)); lampPos.push(V(x, G + 5.85, z - Math.sign(z) * 0.9)); }
+    for (const s of [-1, 1]) for (const z of [-5.5, 5.5]) { const x = s * (P.L / 2 + 4); poles.push([V(x, G, z), V(x, G + 6, z)]); arms.push([V(x, G + 5.7, z), V(x, G + 6, z - Math.sign(z) * 0.9)]); heads.push(V(x, G + 5.95, z - Math.sign(z) * 0.9)); lampPos.push(V(x, G + 5.85, z - Math.sign(z) * 0.9)); }
     const pm = cylSegs(poles, 0.11, M.concreteGrey, 'Postes', 7); g.add(pm);
     const am = cylSegs(arms, 0.045, M.pole, 'Bracos_postes', 5); g.add(am);
     const hm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.62, 0.12, 0.3), M.lampHead, heads.length);
@@ -833,7 +833,7 @@ export async function buildRealEnvironment(M, base = 'data/') {
     eu.add(hm, m1, m2, bm);
     eu.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     // ao lado do pé da escada de SC, de frente para a cidade (+x); posição estimada pelas fotos
-    eu.position.set(P.L / 2 + P.landing + 7.4, G + 0.04, -3.4); eu.rotation.y = Math.PI / 2;
+    eu.position.set(P.L / 2 + P.landing + 7.4, G + 0.04, -4.5); eu.rotation.y = Math.PI / 2; // fora do chumbador do estai (z = −2,4)
     g.add(eu); pick.push(eu);
     eu.userData.mats = [white, red];
   }

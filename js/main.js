@@ -312,7 +312,8 @@ function dimLabel(text, p) { const d = document.createElement('div'); d.classNam
   dimLabel('Largura ≈ 1,50 m (publicada) · guarda-corpo 1,20 m (estimado)', V(22, deckY(22) + 1.5, -1.5));
   dimLabel(`Pendurais ≈ ${fmt(P.hangerStep, 1)} m · Ø 16 mm · a confirmar`, V(-28, cableY(-28) + 0.6, 1.2));
   dimLabel(`Escada ≈ ${n} degraus × ${fmt((P.deckEnd - P.ground) / n * 100, 0)} cm · a contar`, V(h + P.landing + n * P.stairRun / 2, P.ground + 3.2, 1.6));
-  dimLabel('Ancoragem dos cabos', V(h + P.anchorDist, P.ground + 1.2, 0));
+  dimLabel('SC: estais no piso (chumbador + esticador)', V(h + P.anchorDist, P.ground + 1.2, P.anchorZ));
+  dimLabel('RS: escoras de concreto (ancoragem) · estimado', V(-h - P.rsStrut / 2, P.ground + P.rsStrutY + 2.6, 2.2));
   dimLabel('N.A. médio ±0,00 (referência)', V(-20, 0.1, 10));
   dimLabel('Praça / cais ≈ +1,60 m · estimado', V(-h - 4, P.ground + 0.3, 12));
 })();
@@ -436,7 +437,7 @@ const VIEWS = [
   ['Praça RS', [-68, P.ground + 1.7, 10], [-30, 9, 0]],
   ['Sob a ponte', [6, 1.1, 9], [-2, 5.6, -3]],
   ['Ponte de concreto', [-205, 14, -300], [-300, 5, -392]],
-  ['Letreiro SC', [H() + 22, P.ground + 1.7, -9], [H() + 8.8, P.ground + 1.2, -3.4]],
+  ['Letreiro SC', [H() + 22, P.ground + 1.7, -9], [H() + 8.8, P.ground + 1.2, -4.5]],
   ['Rua (SC)', [H() + 40, P.ground + 1.65, 30], [H(), 9, 0]],
   ['Drone', [60, 90, 75], [0, 4, 0]],
 ];

@@ -24,7 +24,8 @@ export const P = {
   stringerZ: 0.60, transStep: 1.0, transLen: 2.6,
   railH: 1.20, railZ: 0.82, postStep: 2.0,
   legZ: 1.55, legHZ: 0.25, legHXb: 0.75, legHXt: 0.35,
-  anchorDist: 14, landing: 1.4, stairRun: 0.28,
+  anchorDist: 9, anchorZ: 2.4, landing: 1.4, stairRun: 0.28, // SC: estais presos ao piso por chumbador + esticador (fotos)
+  rsStrut: 7.0, rsStrutY: 8.0,  // RS: escora de concreto inclinada até o pilar frontal (distância e cota sobre a praça) — estimado por foto
 };
 export const H = () => P.L / 2;
 export const deckY = (x) => P.deckEnd + P.camber * (1 - Math.pow(2 * x / P.L, 2));
@@ -442,12 +443,16 @@ function taperBox(cx, yb, yt, hxB, hxT, cz, hz, mat, name) {
 }
 
 /** Polilinha do cabo principal (estai de ancoragem + parábola + estai). */
+/** Ponto de ancoragem do estai de SC (topo do esticador), com o par de cabos abrindo para fora da escada. */
+export function scAnchorBase(z) { const sz = Math.sign(z) || 1; return V(H() + P.anchorDist, P.ground + 0.2, sz * P.anchorZ + (z - sz * P.cableZ)); }
+export function scAnchor(z) { const b = scAnchorBase(z), d = V(H(), P.towerTop, z).sub(b).normalize(); return b.addScaledVector(d, 0.48); }
 export function cablePolyline(z, includeBack = true, yOff = 0) {
   const h = H(), pts = [];
-  const ya = P.ground + 0.6;
-  if (includeBack) for (let i = 0; i < 12; i++) { const t = i / 12; pts.push(V(-h - P.anchorDist * (1 - t), ya + (P.towerTop - ya) * t + yOff, z)); }
+  // RS (Torres): o cabo desce embutido na escora de concreto até o pilar frontal
+  if (includeBack) for (let i = 0; i < 12; i++) { const t = i / 12; pts.push(V(-h - P.rsStrut * (1 - t), P.ground + P.rsStrutY + (P.towerTop - P.ground - P.rsStrutY) * t + 0.2 * (1 - t) + yOff, z)); }
   for (let x = -h; x <= h + 1e-6; x += 0.5) pts.push(V(x, cableY(x) + yOff, z));
-  if (includeBack) for (let i = 1; i <= 12; i++) { const t = i / 12; pts.push(V(h + P.anchorDist * t, P.towerTop + (ya - P.towerTop) * t + yOff, z)); }
+  // SC (Passo de Torres): estai reto até o chumbador no piso
+  if (includeBack) { const a = scAnchor(z); for (let i = 1; i <= 12; i++) { const t = i / 12; pts.push(V(h + (a.x - h) * t, P.towerTop + (a.y - P.towerTop) * t + yOff, z + (a.z - z) * t)); } }
   return pts;
 }
 
@@ -534,14 +539,35 @@ export function buildBridge(M) {
   return g;
 }
 
+/** Barra de concreto de seção retangular entre dois pontos (a largura w fica no plano XY, a espessura t em Z). */
+function concreteBar(a, b, w, t, mat, name) {
+  const d = b.clone().sub(a), L = d.length();
+  const geo = boxUV(new THREE.BoxGeometry(L, w, t), 2);
+  const m = new THREE.Mesh(geo, mat); m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.rotation.z = Math.atan2(d.y, d.x); m.name = name; m.castShadow = m.receiveShadow = true; return m;
+}
 function buildHead(s, M) {
   const g = new THREE.Group(); g.name = s < 0 ? 'Cabeceira_Torres_RS' : 'Cabeceira_PassoDeTorres_SC';
   const h = H(), cx = s * h, zw = 2 * P.legZ + 2 * P.legHZ;
-  // pernas
-  for (const z of [-P.legZ, P.legZ]) g.add(taperBox(cx, P.ground - 0.8, P.towerTop + 0.35, P.legHXb, P.legHXt, z, P.legHZ, M.concrete, 'Torre_perna'));
-  g.add(box(0.72, 0.9, zw, cx, P.towerTop - 0.65, 0, M.concrete, 'Viga_superior'));
-  g.add(box(0.2, 2.3, 2 * (P.legZ - P.legHZ), cx, P.towerTop - 2.3, 0, M.concrete, 'Painel_superior'));
-  g.add(box(0.55, 0.35, zw, cx, P.towerTop - 3.6, 0, M.concrete, 'Viga_intermediaria'));
+  if (s < 0) {
+    // Torres (RS): pórtico de concreto com escoras inclinadas para a praça (fotos de 2024–25).
+    // Pilar traseiro junto ao rio, escora até o pilar frontal; as escoras fazem o papel do estai de ancoragem.
+    const xf = cx + s * P.rsStrut, yf = P.ground + P.rsStrutY;
+    for (const z of [-P.legZ, P.legZ]) {
+      g.add(box(0.62, P.towerTop + 0.35 - (P.ground - 0.8), 2 * P.legHZ, cx, (P.towerTop + 0.35 + P.ground - 0.8) / 2, z, M.concrete, 'Pilar_traseiro'));
+      g.add(box(0.9, yf + 0.25 - (P.ground - 0.6), 2 * P.legHZ, xf, (yf + 0.25 + P.ground - 0.6) / 2, z, M.concrete, 'Pilar_frontal'));
+      g.add(concreteBar(V(cx + s * 0.05, P.towerTop + 0.05, z), V(xf - s * 0.2, yf, z), 0.62, 2 * P.legHZ, M.concrete, 'Escora_inclinada'));
+    }
+    g.add(box(0.72, 0.7, zw, cx, P.towerTop - 0.25, 0, M.concrete, 'Viga_superior'));
+    g.add(box(0.55, 0.4, zw, cx, P.towerTop - 3.6, 0, M.concrete, 'Viga_intermediaria'));
+    g.add(box(0.9, 0.45, zw, xf, yf - 0.45, 0, M.concrete, 'Viga_frontal'));
+  } else {
+    // Passo de Torres (SC): torre-pórtico alta com painel fechado no topo
+    for (const z of [-P.legZ, P.legZ]) g.add(taperBox(cx, P.ground - 0.8, P.towerTop + 0.35, P.legHXb, P.legHXt, z, P.legHZ, M.concrete, 'Torre_perna'));
+    g.add(box(0.72, 0.9, zw, cx, P.towerTop - 0.65, 0, M.concrete, 'Viga_superior'));
+    g.add(box(0.2, 2.3, 2 * (P.legZ - P.legHZ), cx, P.towerTop - 2.3, 0, M.concrete, 'Painel_superior'));
+    g.add(box(0.55, 0.35, zw, cx, P.towerTop - 3.6, 0, M.concrete, 'Viga_intermediaria'));
+  }
   g.add(box(1.1, 0.6, zw, cx, P.deckEnd - 0.6, 0, M.concrete, 'Viga_de_apoio'));
   for (const z of [-P.cableZ, P.cableZ]) g.add(box(0.7, 0.2, 0.3, cx, P.towerTop - 0.1, z, M.steelDark, 'Sela'));
   // patamar
@@ -571,8 +597,21 @@ function buildHead(s, M) {
   const rm = new THREE.Mesh(mergeGeometries(rails), M.whiteSteel); rm.name = 'Corrimao_escada'; g.add(rm);
   const tm = new THREE.Mesh(mergeGeometries(meshes), M.mesh); tm.name = 'Tela_escada'; tm.renderOrder = 2; g.add(tm);
   g.add(boxSegs(posts, 0.05, 0.05, M.whiteSteel, 'Montantes_escada'));
-  // bloco de ancoragem
-  g.add(box(2.0, 2.2, 3.2, s * (h + P.anchorDist), P.ground - 0.5, 0, M.concreteGrey, 'Bloco_ancoragem'));
+  // SC: chumbadores no piso (placa de aço + olhal) e esticadores — sem bloco aparente; fundação enterrada
+  if (s > 0) {
+    const parts = [], tb = [];
+    for (const sz of [-1, 1]) {
+      const zc = sz * P.anchorZ, x = h + P.anchorDist;
+      parts.push(new THREE.BoxGeometry(0.55, 0.03, 0.5).translate(x, P.ground + 0.055, zc));        // placa de base
+      for (const c of [-1, 1]) {
+        const zc0 = sz * P.cableZ + c * P.cableGap / 2, p0 = scAnchorBase(zc0), p1 = scAnchor(zc0);
+        parts.push(new THREE.BoxGeometry(0.09, 0.15, 0.025).translate(p0.x, P.ground + 0.14, p0.z));   // chapa-olhal soldada na placa
+        tb.push([p0, p1]);                                                                              // esticador ao longo do estai
+      }
+    }
+    const pm = new THREE.Mesh(mergeGeometries(parts.map(q => q.toNonIndexed())), M.galv); pm.name = 'Chumbadores_estai'; pm.castShadow = pm.receiveShadow = true; g.add(pm);
+    g.add(cylSegs(tb, 0.028, M.galv, 'Esticadores', 10));
+  }
   return g;
 }
 

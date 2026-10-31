@@ -26,7 +26,9 @@ P = dict(
     stringer_y=0.60, trans_step=1.0, trans_len=2.60,
     rail_h=1.20, rail_y=0.82, post_step=2.0,
     leg_y=1.55, leg_hy=0.25, leg_hx_base=0.75, leg_hx_top=0.35,
-    anchor_dist=14.0, landing=1.40, stair_run=0.28,
+    anchor_dist=9.0, anchor_y=2.40,   # SC: estais presos ao piso (chumbador + esticador)
+    rs_strut=7.0, rs_strut_z=8.0,     # RS: escora de concreto até o pilar frontal (estimado por foto)
+    landing=1.40, stair_run=0.28,
     build_environment=True,   # água, cais e praças simples
     build_leds=True,          # fitas LED emissivas (cabos e corrimão)
     led_cable_rgb=(0.17, 0.33, 1.0), led_cable_nits=4000,
@@ -166,11 +168,20 @@ def curve_obj(name, polylines, r, mat, coll, res=2):
         for i, p in enumerate(pts): sp.points[i].co = (*p, 1.0)
     ob = bpy.data.objects.new(name, cu); cu.materials.append(mat); coll.objects.link(ob); return ob
 
+def sc_anchor(y):
+    sy = 1 if y >= 0 else -1
+    return (H + P['anchor_dist'], sy * P['anchor_y'] + (y - sy * P['cable_y']), P['ground'] + 0.62)
+
 def cable_polyline(y, back=True, dz=0.0):
-    pts, za = [], P['ground'] + 0.6
-    if back: pts += [(-H - P['anchor_dist'] * (1 - i / 12), y, za + (P['tower_top'] - za) * i / 12 + dz) for i in range(12)]
+    pts = []
+    zf = P['ground'] + P['rs_strut_z']
+    # RS: o cabo desce embutido na escora de concreto
+    if back: pts += [(-H - P['rs_strut'] * (1 - i / 12), y, zf + 0.2 * (1 - i / 12) + (P['tower_top'] - zf) * i / 12 + dz) for i in range(12)]
     pts += [(x, y, cable_z(x) + dz) for x in frange(-H, H, 0.5)]
-    if back: pts += [(H + P['anchor_dist'] * i / 12, y, P['tower_top'] + (za - P['tower_top']) * i / 12 + dz) for i in range(1, 13)]
+    # SC: estai reto até o esticador no piso
+    if back:
+        ax, ay, az = sc_anchor(y)
+        pts += [(H + (ax - H) * i / 12, y + (ay - y) * i / 12, P['tower_top'] + (az - P['tower_top']) * i / 12 + dz) for i in range(1, 13)]
     return pts
 
 # ---------------------------------------------------------------------
@@ -239,11 +250,22 @@ c_tow = sub('04_Torres_e_cabeceiras')
 n_steps = round((P['deck_end'] - P['ground']) / 0.18); rise = (P['deck_end'] - P['ground']) / n_steps
 for s, nome in ((-1, 'RS_Torres'), (1, 'SC_Passo_de_Torres')):
     cx = s * H; bm = bmesh.new(); yw = 2 * P['leg_y'] + 2 * P['leg_hy']
-    for y in (-P['leg_y'], P['leg_y']):
-        add_frustum(bm, cx, P['ground'] - 0.8, P['tower_top'] + 0.35, P['leg_hx_base'], P['leg_hx_top'], y, P['leg_hy'])
-    add_box(bm, (cx, 0, P['tower_top'] - 0.65), (0.72, yw, 0.90))                       # viga superior
-    add_box(bm, (cx, 0, P['tower_top'] - 2.30), (0.20, 2 * (P['leg_y'] - P['leg_hy']), 2.30))  # painel
-    add_box(bm, (cx, 0, P['tower_top'] - 3.60), (0.55, yw, 0.35))                       # viga intermediária
+    if s < 0:   # RS: pórtico com escoras inclinadas até pilares frontais (sem estai no piso)
+        xf, zf = cx + s * P['rs_strut'], P['ground'] + P['rs_strut_z']
+        for y in (-P['leg_y'], P['leg_y']):
+            z0, z1 = P['ground'] - 0.8, P['tower_top'] + 0.35
+            add_box(bm, (cx, y, (z0 + z1) / 2), (0.62, 2 * P['leg_hy'], z1 - z0))            # pilar traseiro
+            add_box(bm, (xf, y, (P['ground'] - 0.6 + zf + 0.25) / 2), (0.9, 2 * P['leg_hy'], zf + 0.25 - P['ground'] + 0.6))  # pilar frontal
+            add_segment_box(bm, (cx + s * 0.05, y, P['tower_top'] + 0.05), (xf - s * 0.2, y, zf), 2 * P['leg_hy'], 0.62)  # escora
+        add_box(bm, (cx, 0, P['tower_top'] - 0.25), (0.72, yw, 0.70))
+        add_box(bm, (cx, 0, P['tower_top'] - 3.60), (0.55, yw, 0.40))
+        add_box(bm, (xf, 0, zf - 0.45), (0.9, yw, 0.45))
+    else:       # SC: torre-pórtico alta com painel no topo
+        for y in (-P['leg_y'], P['leg_y']):
+            add_frustum(bm, cx, P['ground'] - 0.8, P['tower_top'] + 0.35, P['leg_hx_base'], P['leg_hx_top'], y, P['leg_hy'])
+        add_box(bm, (cx, 0, P['tower_top'] - 0.65), (0.72, yw, 0.90))                       # viga superior
+        add_box(bm, (cx, 0, P['tower_top'] - 2.30), (0.20, 2 * (P['leg_y'] - P['leg_hy']), 2.30))  # painel
+        add_box(bm, (cx, 0, P['tower_top'] - 3.60), (0.55, yw, 0.35))                       # viga intermediária
     add_box(bm, (cx, 0, P['deck_end'] - 0.60), (1.10, yw, 0.60))                        # viga de apoio
     mesh_obj('Torre_' + nome, bm, M['concreto'], c_tow)
     bm = bmesh.new()
@@ -252,7 +274,8 @@ for s, nome in ((-1, 'RS_Torres'), (1, 'SC_Passo_de_Torres')):
     for k in range(n_steps):
         top = P['deck_end'] - (k + 1) * rise
         add_box(bm, (s * (H + P['landing'] + (k + 0.5) * P['stair_run']), 0, top - (rise + 0.12) / 2), (P['stair_run'], 1.6, rise + 0.12))
-    add_box(bm, (s * (H + P['anchor_dist']), 0, P['ground'] - 0.5), (2.0, 3.2, 2.2))    # bloco de ancoragem
+    if s > 0:   # placas dos chumbadores no piso (fundação enterrada, não modelada)
+        for sy in (-1, 1): add_box(bm, (H + P['anchor_dist'], sy * P['anchor_y'], P['ground'] + 0.055), (0.55, 0.5, 0.03))
     mesh_obj('Escada_patamar_ancoragem_' + nome, bm, M['concreto_cinza'], c_tow)
     bm = bmesh.new()
     for y in (-P['cable_y'], P['cable_y']): add_box(bm, (cx, y, P['tower_top'] - 0.1), (0.7, 0.3, 0.2))
